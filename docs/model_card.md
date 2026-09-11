@@ -16,9 +16,9 @@
 
 | Metric | Value | Benchmark |
 |---|---|---|
-| ROC-AUC | 0.7895 | — |
-| Gini coefficient (`2×AUC−1`) | 57.90% | >50% = Strong Rating Model (central-bank / Basel II-III convention) |
-| K-S statistic | 44.19% | >40% = high separation power |
+| ROC-AUC | 0.80 | — |
+| Gini coefficient (`2×AUC−1`) | 60% | >50% = Strong Rating Model (central-bank / Basel II-III convention) |
+| K-S statistic | 44.22% | >40% = high separation power |
 | PR-AUC | reported in `model/artifacts/metrics.json` after training | — |
 | Baseline (market) bad rate | 8.07% | — |
 
