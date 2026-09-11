@@ -1,0 +1,26 @@
+# Trained model artifacts (large binary files, regenerate via model/train.py)
+model/artifacts/*.pkl
+model/artifacts/*.joblib
+
+# Environment / secrets
+.env
+
+# Raw data - never commit source data
+data/
+*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS / editor noise
+.DS_Store
+.vscode/
+.idea/

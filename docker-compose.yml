@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_DIR=model/artifacts
+      - API_KEY=${API_KEY:-}
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./model/artifacts:/srv/model/artifacts:ro
+    restart: unless-stopped
