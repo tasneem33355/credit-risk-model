@@ -2,7 +2,7 @@
 
 A production-ready credit-default risk model (XGBoost + LightGBM ensemble)
 trained on the Home Credit Default Risk dataset, served behind a FastAPI
-scoring endpoint. Gini = 57.9%, K-S = 44.2% — a "Strong Rating Model" by
+scoring endpoint. Gini = 60%, K-S = 44.2% — a "Strong Rating Model" by
 Basel II/III central-bank convention. Full write-up: [`docs/model_card.md`](docs/model_card.md).
 
 ## Quickstart
@@ -63,8 +63,8 @@ for why that matters.
 
 | Metric | Value |
 |---|---|
-| ROC-AUC | 0.7895 |
-| Gini coefficient | 57.90% (Strong Rating Model) |
+| ROC-AUC | 0.80 |
+| Gini coefficient | 60% (Strong Rating Model) |
 | K-S statistic | 44.19% |
 | NPL reduction at 70% acceptance | 8.07% → 3.43% |
 | Net-profit impact vs. no model | +$838M in prevented default losses at 70% acceptance |
