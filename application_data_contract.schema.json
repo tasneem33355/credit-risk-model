@@ -1,0 +1,661 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "application_data_contract.schema.json",
+  "title": "Credit Application Data Contract (v2 - Bank Embedded Platform)",
+  "description": "Unified data contract between Intake/OCR/Form pipeline, Core Banking DB, and downstream Risk and Fraud models. Supports returning bank customers and new-to-bank applicants.",
+  "type": "object",
+  "required": [
+    "application_id",
+    "applicant_type",
+    "submission_timestamp",
+    "is_returning_customer",
+    "documents",
+    "form_data",
+    "internal_history",
+    "consistency_checks"
+  ],
+  "properties": {
+    "application_id": {
+      "type": "string",
+      "description": "Unique identifier for financing application, e.g. APP-2026-00451"
+    },
+    "applicant_type": {
+      "type": "string",
+      "enum": [
+        "individual",
+        "sme",
+        "corporate"
+      ],
+      "default": "individual"
+    },
+    "submission_timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "is_returning_customer": {
+      "type": "boolean",
+      "description": "true if applicant already has an existing profile/account/loan in the bank's core system; false if new-to-bank."
+    },
+    "documents": {
+      "type": "array",
+      "description": "List of documents uploaded and processed through OCR/document intelligence.",
+      "items": {
+        "type": "object",
+        "required": [
+          "document_type",
+          "overall_quality_score",
+          "extracted_fields"
+        ],
+        "properties": {
+          "document_type": {
+            "type": "string",
+            "enum": [
+              "national_id",
+              "bank_statement",
+              "salary_certificate",
+              "iscore_report",
+              "commercial_register"
+            ]
+          },
+          "overall_quality_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Overall OCR readability score (confidence score average)"
+          },
+          "is_tampered_suspected": {
+            "type": "boolean",
+            "default": false,
+            "description": "Flag raised by document forensics (font misalignment, digital artifacts)"
+          },
+          "extracted_fields": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "national_id_fields": {
+      "description": "Extracted from Egyptian National ID card (Front & Back OCR). Maps to DAYS_BIRTH / AGE_YEARS and identity verification.",
+      "type": "object",
+      "properties": {
+        "full_name": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "national_id": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "date_of_birth": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "age_years": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "gender": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "governorate": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "address": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "profession_on_id": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "marital_status_on_id": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "id_expiry_date": {
+          "$ref": "#/definitions/extractedValue"
+        }
+      }
+    },
+    "salary_certificate_fields": {
+      "description": "Extracted from HR Salary Letter / Pay slip. Maps to AMT_INCOME_TOTAL, DAYS_EMPLOYED, OCCUPATION_TYPE, ORGANIZATION_TYPE.",
+      "type": "object",
+      "properties": {
+        "employer_name": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "employer_sector": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "e.g. Government, Public Enterprise, Private, Multinational"
+        },
+        "job_title": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "declared_net_salary": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Net monthly take-home income"
+        },
+        "declared_gross_salary": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "employment_date": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "employment_tenure_years": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "issue_date": {
+          "$ref": "#/definitions/extractedValue"
+        }
+      }
+    },
+    "bank_statement_fields": {
+      "description": "Extracted from 6-month Bank Statement (PDF or scan). Maps to cash flow liquidity and behavioral features.",
+      "type": "object",
+      "properties": {
+        "bank_name": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "account_number": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "statement_period_months": {
+          "$ref": "#/definitions/extractedValue",
+          "default": {
+            "value": 6,
+            "confidence": 1.0
+          }
+        },
+        "avg_monthly_net_inflow": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Implied monthly salary deposits"
+        },
+        "avg_monthly_balance": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "min_monthly_balance": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "max_monthly_balance": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "balance_volatility_std": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "overdraft_frequency": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "returned_cheques_count": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "income_regularity_score": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Score 0-1 on salary deposit date stability"
+        }
+      }
+    },
+    "iscore_report_fields": {
+      "description": "Extracted from Egyptian Credit Bureau (I-Score) report. Maps to EXT_SOURCE proxy, BUREAU_* aggregate features, and installment history.",
+      "type": "object",
+      "properties": {
+        "is_available": {
+          "type": "boolean",
+          "default": true
+        },
+        "credit_score": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "I-Score credit score ranging from 300 to 850. Normalized to [0, 1] as EXT_SOURCE proxy."
+        },
+        "score_tier": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Excellent, Very Good, Good, Fair, Poor, Very Poor"
+        },
+        "score_date": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "total_active_loans_limit": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Maps to BUREAU_TOTAL_CREDIT"
+        },
+        "total_outstanding_balance": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Maps to BUREAU_TOTAL_DEBT"
+        },
+        "total_overdue_amount": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Maps to BUREAU_TOTAL_OVERDUE"
+        },
+        "max_days_past_due": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Maps to BUREAU_MAX_OVERDUE / SK_DPD"
+        },
+        "active_credit_cards_count": {
+          "$ref": "#/definitions/extractedValue"
+        },
+        "total_credit_card_utilization": {
+          "$ref": "#/definitions/extractedValue",
+          "description": "Ratio of card balance to total card limit"
+        },
+        "bureau_facilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "lender_name": {
+                "type": "string"
+              },
+              "facility_type": {
+                "type": "string",
+                "enum": [
+                  "personal_loan",
+                  "auto_loan",
+                  "mortgage",
+                  "credit_card",
+                  "overdraft",
+                  "sme_loan"
+                ]
+              },
+              "granted_amount": {
+                "type": "number"
+              },
+              "outstanding_amount": {
+                "type": "number"
+              },
+              "installment_amount": {
+                "type": "number"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "closed",
+                  "defaulted",
+                  "settled"
+                ]
+              },
+              "overdue_days": {
+                "type": "integer"
+              },
+              "overdue_amount": {
+                "type": "number"
+              },
+              "start_date": {
+                "type": "string"
+              },
+              "legal_action_flag": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "form_data": {
+      "description": "User-declared application data. Maps to AMT_CREDIT, AMT_ANNUITY, socio-demographic features.",
+      "type": "object",
+      "required": [
+        "requested_amount",
+        "tenure_months",
+        "loan_purpose"
+      ],
+      "properties": {
+        "requested_amount": {
+          "type": "number",
+          "description": "Maps to AMT_CREDIT"
+        },
+        "tenure_months": {
+          "type": "integer",
+          "description": "Repayment tenure in months"
+        },
+        "requested_annuity": {
+          "type": "number",
+          "description": "Estimated monthly installment (AMT_ANNUITY)"
+        },
+        "loan_purpose": {
+          "type": "string",
+          "enum": [
+            "personal_cash",
+            "auto",
+            "durable_goods",
+            "education",
+            "medical",
+            "home_renovation",
+            "sme_working_capital"
+          ]
+        },
+        "goods_price": {
+          "type": "number",
+          "description": "Maps to AMT_GOODS_PRICE (if purchase-linked loan)"
+        },
+        "family_status": {
+          "type": "string",
+          "enum": [
+            "single",
+            "married",
+            "civil_marriage",
+            "widow",
+            "separated"
+          ]
+        },
+        "children_count": {
+          "type": "integer",
+          "default": 0,
+          "description": "Maps to CNT_CHILDREN"
+        },
+        "family_members_count": {
+          "type": "integer",
+          "default": 1,
+          "description": "Maps to CNT_FAM_MEMBERS"
+        },
+        "housing_type": {
+          "type": "string",
+          "enum": [
+            "owned",
+            "rented",
+            "family_owned",
+            "municipal"
+          ]
+        },
+        "education_type": {
+          "type": "string",
+          "enum": [
+            "higher_education",
+            "secondary",
+            "incomp_higher",
+            "academic_degree",
+            "lower_secondary"
+          ]
+        },
+        "owns_car": {
+          "type": "boolean",
+          "default": false,
+          "description": "Maps to FLAG_OWN_CAR"
+        },
+        "owns_realty": {
+          "type": "boolean",
+          "default": false,
+          "description": "Maps to FLAG_OWN_REALTY"
+        },
+        "branch_id": {
+          "type": "integer",
+          "description": "Branch submitting or processing the request"
+        }
+      }
+    },
+    "internal_history": {
+      "description": "Directly fetched from Core Banking System (Customers, Accounts, Transactions, Loans). Fully populated for Returning Customers (60-70%), empty with missing flag for New-to-Bank (30-40%).",
+      "type": "object",
+      "required": [
+        "internal_history_missing"
+      ],
+      "properties": {
+        "internal_history_missing": {
+          "type": "integer",
+          "enum": [
+            0,
+            1
+          ],
+          "description": "1 = New-to-bank applicant (no bank history); 0 = Existing returning bank customer."
+        },
+        "customer_id": {
+          "type": "string"
+        },
+        "kyc_status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "pending",
+            "not_applicable"
+          ]
+        },
+        "customer_since_date": {
+          "type": "string"
+        },
+        "relationship_tenure_months": {
+          "type": "number",
+          "default": 0
+        },
+        "bank_accounts": {
+          "type": "array",
+          "description": "Current/Savings accounts held with the bank",
+          "items": {
+            "type": "object",
+            "properties": {
+              "account_id": {
+                "type": "string"
+              },
+              "account_type": {
+                "type": "string",
+                "enum": [
+                  "current",
+                  "savings",
+                  "fixed_deposit",
+                  "payroll"
+                ]
+              },
+              "currency": {
+                "type": "string",
+                "default": "EGP"
+              },
+              "current_balance": {
+                "type": "number"
+              },
+              "open_date": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "dormant",
+                  "closed"
+                ]
+              }
+            }
+          }
+        },
+        "previous_bank_loans": {
+          "type": "array",
+          "description": "Previous credit facilities with this bank (maps to PREV_* and INST_*)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "loan_id": {
+                "type": "string"
+              },
+              "loan_type": {
+                "type": "string",
+                "enum": [
+                  "personal",
+                  "auto",
+                  "mortgage",
+                  "credit_card",
+                  "overdraft"
+                ]
+              },
+              "principal_amount": {
+                "type": "number"
+              },
+              "interest_rate": {
+                "type": "number"
+              },
+              "tenure_months": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "closed",
+                  "refused",
+                  "cancelled"
+                ]
+              },
+              "start_date": {
+                "type": "string"
+              },
+              "installments_count": {
+                "type": "integer"
+              },
+              "paid_on_time_count": {
+                "type": "integer"
+              },
+              "late_payments_count": {
+                "type": "integer"
+              },
+              "severe_late_count": {
+                "type": "integer",
+                "description": "Late > 30 days"
+              },
+              "max_days_past_due": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "aggregated_metrics": {
+          "type": "object",
+          "description": "Pre-computed behavioral metrics ready for model consumption (matches 413 features)",
+          "properties": {
+            "prev_app_count": {
+              "type": "number",
+              "default": 0
+            },
+            "prev_approved_count": {
+              "type": "number",
+              "default": 0
+            },
+            "prev_refused_count": {
+              "type": "number",
+              "default": 0
+            },
+            "prev_approved_ratio": {
+              "type": "number",
+              "default": 0
+            },
+            "prev_avg_credit": {
+              "type": "number",
+              "default": 0
+            },
+            "inst_payment_count": {
+              "type": "number",
+              "default": 0
+            },
+            "inst_late_count": {
+              "type": "number",
+              "default": 0
+            },
+            "inst_severe_late_count": {
+              "type": "number",
+              "default": 0
+            },
+            "inst_late_ratio": {
+              "type": "number",
+              "default": 0
+            },
+            "inst_avg_days_late": {
+              "type": "number",
+              "default": 0
+            },
+            "inst_max_days_late": {
+              "type": "number",
+              "default": 0
+            },
+            "pos_record_count": {
+              "type": "number",
+              "default": 0
+            },
+            "pos_avg_dpd": {
+              "type": "number",
+              "default": 0
+            },
+            "cc_avg_balance": {
+              "type": "number",
+              "default": 0
+            },
+            "cc_balance_to_limit_ratio": {
+              "type": "number",
+              "default": 0
+            }
+          }
+        }
+      }
+    },
+    "consistency_checks": {
+      "description": "Cross-document verification engine outputs. Primary input for Fraud Model and Risk credibility adjustment.",
+      "type": "object",
+      "required": [
+        "income_mismatch_ratio",
+        "employer_name_match",
+        "national_id_match_across_documents",
+        "iscore_report_age_days",
+        "fraud_risk_level"
+      ],
+      "properties": {
+        "income_mismatch_ratio": {
+          "type": "number",
+          "description": "abs(declared_salary - bank_statement_implied_salary) / declared_salary"
+        },
+        "employer_name_match": {
+          "type": "boolean",
+          "description": "Fuzzy string match between salary certificate employer and bank statement deposit payer."
+        },
+        "employer_match_similarity_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "national_id_match_across_documents": {
+          "type": "boolean",
+          "description": "True if National ID is 100% consistent on ID card, salary slip, bank statement, and I-Score."
+        },
+        "iscore_report_age_days": {
+          "type": "integer",
+          "description": "Days since I-Score report issue date (flagged if > 30 days)."
+        },
+        "document_tampering_flag": {
+          "type": "boolean",
+          "default": false,
+          "description": "True if any uploaded document showed signs of digital alteration or OCR confidence anomalies."
+        },
+        "running_balance_math_valid": {
+          "type": "boolean",
+          "default": true,
+          "description": "True if transaction arithmetic on bank statement matches balance_after column."
+        },
+        "fraud_risk_level": {
+          "type": "string",
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "CRITICAL"
+          ],
+          "default": "LOW"
+        },
+        "triggered_fraud_rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of rule codes violated, e.g. ['RULE_INCOME_MISMATCH_50', 'RULE_EXPIRED_ISCORE']"
+        }
+      }
+    },
+    "excluded_features_note": {
+      "type": "string",
+      "default": "SOCIAL_CIRCLE_OBS/DEF permanently dropped (no Egyptian banking data source). EXT_SOURCE_1/2/3 proxied via normalized Egyptian I-Score credit score."
+    }
+  },
+  "definitions": {
+    "extractedValue": {
+      "type": "object",
+      "required": [
+        "value",
+        "confidence"
+      ],
+      "properties": {
+        "value": {},
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}
