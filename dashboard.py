@@ -16,8 +16,29 @@ import numpy as np
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
+CORE_BANKING_FILE = os.path.join(
+    BASE_DIR,
+    "bank_data_sample_Ammar Elgazar.xlsx"
+)
+
+core_banking_data = prepare_data(
+    load_core_banking_data(CORE_BANKING_FILE)
+)
+
 from fraud_engine import CreditFraudEngine
 from adapter import adapt_application_to_model_inputs
+from portfolio_analytics import (
+    load_core_banking_data,
+    prepare_data,
+    calculate_portfolio_kpis,
+    build_customer_analytics,
+    build_loan_analytics,
+    build_transaction_analytics,
+    calculate_concentration,
+    stress_test,
+    build_stress_curve,
+    calculate_data_quality,
+)
 
 st.set_page_config(
     page_title="CrediX | Enterprise Credit Decisioning & Risk Analytics",
@@ -314,105 +335,463 @@ with tab4:
     st.dataframe([app_features], use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 5: PORTFOLIO & ADVANCED ANALYTICS (NEW ENTERPRISE SUITE)
+# TAB 5: PORTFOLIO & ADVANCED ANALYTICS
 # -----------------------------------------------------------------------------
 with tab5:
-    st.subheader("📈 Portfolio-Wide Analytics & CBE Macro Stress Testing")
-    st.caption("Strategic risk management dashboard for Chief Risk Officers (CRO) and Bank Board Members")
-    
-    # Section 1: Portfolio High-Level KPIs
-    p_kpi1, p_kpi2, p_kpi3, p_kpi4 = st.columns(4)
-    with p_kpi1:
-        st.metric("Total Active Portfolio", "EGP 485.2M", "+12.4% YoY")
-    with p_kpi2:
-        st.metric("Baseline Default Rate (NPL)", "7.84%", "-0.62% bps")
-    with p_kpi3:
-        st.metric("Expected Loss (IFRS 9 Stage 1/2)", "EGP 19.4M", "Covered by Reserves")
-    with p_kpi4:
-        st.metric("Intercepted Fraud Exposure", "EGP 14.8M", "312 Applications Blocked")
 
-    st.markdown("---")
-    
-    # Section 2: Dual-Segment Value (Returning vs New-to-Bank)
-    st.markdown("### 1. Dual-Segment Value Analysis: Value of Internal Bank History")
-    st.write("Quantifying the competitive credit advantage gained from embedded core banking data:")
-    
-    col_seg1, col_seg2 = st.columns([1, 1])
-    with col_seg1:
-        segment_df = pd.DataFrame({
-            "Metric": ["Portfolio Volume Share", "Default Rate (12M)", "Model Discrimination (ROC-AUC)", "Avg Approved Ticket"],
-            "Returning Customers (65%)": ["65.0%", "5.82%", "0.792 (High)", "EGP 185,000"],
-            "New-to-Bank Applicants (35%)": ["35.0%", "11.45%", "0.738 (Moderate)", "EGP 95,000"]
-        })
-        st.dataframe(segment_df, use_container_width=True)
-        st.caption("Insight: Prior repayment history reduces credit default risk by 49.2% relative to cold-start applicants.")
-    
-    with col_seg2:
-        chart_data = pd.DataFrame({
-            "Segment": ["Returning Bank Customers", "New-to-Bank Applicants"],
-            "Default Rate (%)": [5.82, 11.45],
-            "ROC-AUC (x10)": [7.92, 7.38]
-        }).set_index("Segment")
-        st.bar_chart(chart_data)
+    st.subheader("📈 Portfolio Intelligence & Risk Analytics")
+    st.caption(
+        "Portfolio-level business intelligence, customer behavior, "
+        "credit exposure and scenario-based risk analytics."
+    )
 
-    st.markdown("---")
+    # =====================================================================
+    # 1. PORTFOLIO OVERVIEW
+    # =====================================================================
 
-    # Section 3: Macroeconomic Stress Testing Engine
-    st.markdown("### 2. CBE Regulatory Macro Stress-Testing Simulator")
-    st.write("Simulate adverse economic shocks on portfolio default probability and regulatory provisioning requirements:")
+    st.markdown("### 1. Portfolio Overview")
 
-    col_stress_ctrl, col_stress_res = st.columns([1, 2])
-    with col_stress_ctrl:
-        st.markdown("**Economic Shock Parameters:**")
-        inflation_shock = st.slider("Inflation Rate Spike (+%)", min_value=0.0, max_value=12.0, value=3.0, step=0.5)
-        rate_hike_bps = st.slider("CBE Key Rate Hike (+Bps)", min_value=0, max_value=600, value=200, step=50)
-        unemployment_spike = st.slider("Unemployment Shock (+%)", min_value=0.0, max_value=8.0, value=1.5, step=0.5)
+    kpis = calculate_portfolio_kpis(core_banking_data)
 
-    with col_stress_res:
-        # Elasticity calculation: baseline 7.84% default rate
-        base_pd = 0.0784
-        stressed_pd = base_pd * (1.0 + (inflation_shock * 0.045) + (rate_hike_bps / 100 * 0.032) + (unemployment_spike * 0.065))
-        stressed_el = 485.2 * stressed_pd * 0.45  # EL = EAD * PD * LGD (45%)
-        incremental_reserves = max(0.0, stressed_el - 19.4)
+    p1, p2, p3, p4, p5 = st.columns(5)
 
-        col_st1, col_st2, col_st3 = st.columns(3)
-        col_st1.metric("Stressed NPL Default Rate", f"{stressed_pd * 100:.2f}%", f"+{(stressed_pd - base_pd)*100:.2f}% bps", delta_color="inverse")
-        col_st2.metric("Stressed Expected Loss (EL)", f"EGP {stressed_el:.1f}M", f"+EGP {incremental_reserves:.1f}M", delta_color="inverse")
-        col_st3.metric("Required Capital Buffer", f"EGP {incremental_reserves:.1f}M", "Tier 2 Adequacy")
+    with p1:
+        st.metric(
+            "Customers",
+            f"{kpis['customer_count']:,}"
+        )
 
-        # Stress Curve Progression
-        shocks = np.linspace(0, 10, 10)
-        curve_df = pd.DataFrame({
-            "Inflation Shock Level": [f"+{int(s)}%" for s in shocks],
-            "Expected NPL Rate (%)": [base_pd * (1.0 + (s * 0.045)) * 100 for s in shocks]
-        }).set_index("Inflation Shock Level")
-        st.line_chart(curve_df)
+    with p2:
+        st.metric(
+            "Active Loans",
+            f"{kpis['active_loan_count']:,}"
+        )
+
+    with p3:
+        st.metric(
+            "Loan Exposure",
+            f"EGP {kpis['loan_exposure']:,.0f}"
+        )
+
+    with p4:
+        st.metric(
+            "Average Ticket",
+            f"EGP {kpis['average_ticket']:,.0f}"
+        )
+
+    with p5:
+        st.metric(
+            "Avg. Interest Rate",
+            f"{kpis['average_interest_rate'] * 100:.2f}%"
+        )
+
+    st.info(
+        "Portfolio KPIs are calculated directly from the available "
+        "core-banking sample data. They are not hard-coded."
+    )
 
     st.markdown("---")
 
-    # Section 4: Cost-Optimal Decision Cutoff (ROC Profit Optimization)
-    st.markdown("### 3. Cost-Optimal Decision Cutoff Analysis")
-    st.write("Demonstrating why a standard 0.50 threshold fails in banking, and proving why **0.18** maximizes total net interest margin:")
-    
-    col_cut1, col_cut2 = st.columns([1, 1])
-    with col_cut1:
-        st.markdown("""
-        - **Cost of False Positive (Bad Loan Approved):** 100% loss of loan principal (EGP 150,000 avg).
-        - **Cost of False Negative (Good Customer Rejected):** Loss of net interest margin ~14% (EGP 21,000).
-        - **Asymmetric Cost Ratio:** Approving a defaulter is **~7.1x** more costly than losing a good borrower.
-        - **Optimal Mathematical Cutoff:** Calculated at $p^* = \\frac{C_{FN}}{C_{FN} + C_{FP}} \\approx 0.178$.
-        """)
-    with col_cut2:
-        threshold_steps = np.linspace(0.05, 0.50, 10)
-        net_profit_index = [
-            100 - (abs(t - 0.18) * 180) - (30 if t > 0.35 else 0) for t in threshold_steps
-        ]
-        thresh_df = pd.DataFrame({
-            "Risk Threshold Cutoff": [f"{t:.2f}" for t in threshold_steps],
-            "Portfolio Net Profit Index": net_profit_index
-        }).set_index("Risk Threshold Cutoff")
-        st.line_chart(thresh_df)
-        st.caption("Peak portfolio profitability achieved at threshold range [0.16 - 0.20].")
+    # =====================================================================
+    # 2. CUSTOMER RELATIONSHIP ANALYTICS
+    # =====================================================================
+
+    st.markdown("### 2. Customer Relationship & Exposure Analytics")
+
+    customer_df = build_customer_analytics(
+        core_banking_data
+    )
+
+    if not customer_df.empty:
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            st.markdown("#### Relationship Depth")
+
+            relationship_summary = pd.DataFrame({
+                "Metric": [
+                    "Customers",
+                    "Avg Accounts / Customer",
+                    "Avg Loans / Customer",
+                    "Avg Relationship Products",
+                    "Customers with Loans",
+                ],
+                "Value": [
+                    len(customer_df),
+                    round(customer_df["account_count"].mean(), 2),
+                    round(customer_df["loan_count"].mean(), 2),
+                    round(customer_df["relationship_depth"].mean(), 2),
+                    int(
+                        (customer_df["loan_count"] > 0).sum()
+                    ),
+                ],
+            })
+
+            st.dataframe(
+                relationship_summary,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with c2:
+
+            st.markdown("#### Customer Exposure")
+
+            exposure_view = customer_df[
+                [
+                    "customer_id",
+                    "full_name",
+                    "total_balance",
+                    "loan_exposure",
+                    "relationship_depth",
+                ]
+            ].copy()
+
+            exposure_view = exposure_view.sort_values(
+                "loan_exposure",
+                ascending=False
+            )
+
+            st.dataframe(
+                exposure_view,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    else:
+        st.warning(
+            "Customer relationship analytics are unavailable "
+            "because core-banking customer data is missing."
+        )
+
+    st.markdown("---")
+
+    # =====================================================================
+    # 3. CREDIT EXPOSURE ANALYTICS
+    # =====================================================================
+
+    st.markdown("### 3. Credit Exposure & Concentration")
+
+    loan_type_df, branch_df = build_loan_analytics(
+        core_banking_data
+    )
+
+    concentration = calculate_concentration(
+        core_banking_data.get(
+            "loans",
+            pd.DataFrame()
+        )
+    )
+
+    e1, e2, e3 = st.columns(3)
+
+    with e1:
+        st.metric(
+            "Top Customer Exposure Share",
+            f"{concentration['top_customer_share'] * 100:.1f}%"
+        )
+
+    with e2:
+        st.metric(
+            "Top 5 Customers Share",
+            f"{concentration['top_5_customer_share'] * 100:.1f}%"
+        )
+
+    with e3:
+        st.metric(
+            "Customer Concentration (HHI)",
+            f"{concentration['herfindahl_index']:.3f}"
+        )
+
+    left, right = st.columns(2)
+
+    with left:
+
+        st.markdown("#### Exposure by Loan Type")
+
+        if not loan_type_df.empty:
+
+            display_df = loan_type_df.copy()
+
+            display_df["total_exposure"] = (
+                display_df["total_exposure"]
+                .map(lambda x: f"EGP {x:,.0f}")
+            )
+
+            display_df["average_ticket"] = (
+                display_df["average_ticket"]
+                .map(lambda x: f"EGP {x:,.0f}")
+            )
+
+            display_df["average_interest_rate"] = (
+                display_df["average_interest_rate"] * 100
+            ).map(lambda x: f"{x:.2f}%")
+
+            display_df["exposure_share"] = (
+                display_df["exposure_share"] * 100
+            ).map(lambda x: f"{x:.1f}%")
+
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        else:
+            st.info("Loan type analytics unavailable.")
+
+    with right:
+
+        st.markdown("#### Exposure by Branch / Region")
+
+        if not branch_df.empty:
+
+            chart_col = (
+                "region"
+                if "region" in branch_df.columns
+                else branch_df.columns[0]
+            )
+
+            chart_df = branch_df.set_index(
+                chart_col
+            )["total_exposure"]
+
+            st.bar_chart(chart_df)
+
+        else:
+            st.info("Branch exposure analytics unavailable.")
+
+    st.markdown("---")
+
+    # =====================================================================
+    # 4. TRANSACTION & BEHAVIOR ANALYTICS
+    # =====================================================================
+
+    st.markdown("### 4. Transaction & Cashflow Behavior")
+
+    tx_analytics = build_transaction_analytics(
+        core_banking_data
+    )
+
+    tx_summary = tx_analytics["summary"]
+
+    t1, t2, t3, t4 = st.columns(4)
+
+    with t1:
+        st.metric(
+            "Transactions",
+            f"{tx_summary.get('transaction_count', 0):,}"
+        )
+
+    with t2:
+        st.metric(
+            "Deposit Volume",
+            f"EGP {tx_summary.get('deposit_volume', 0):,.0f}"
+        )
+
+    with t3:
+        st.metric(
+            "Withdrawal Volume",
+            f"EGP {tx_summary.get('withdrawal_volume', 0):,.0f}"
+        )
+
+    with t4:
+        st.metric(
+            "Net Cash Movement",
+            f"EGP {tx_summary.get('net_cash_movement', 0):,.0f}"
+        )
+
+    tx_left, tx_right = st.columns(2)
+
+    with tx_left:
+
+        st.markdown("#### Transaction Mix")
+
+        if not tx_analytics["types"].empty:
+
+            type_chart = (
+                tx_analytics["types"]
+                .set_index("transaction_type")
+                ["transaction_volume"]
+            )
+
+            st.bar_chart(type_chart)
+
+        else:
+            st.info("Transaction-type data unavailable.")
+
+    with tx_right:
+
+        st.markdown("#### Channel Usage")
+
+        if not tx_analytics["channels"].empty:
+
+            channel_chart = (
+                tx_analytics["channels"]
+                .set_index("channel")
+                ["transaction_volume"]
+            )
+
+            st.bar_chart(channel_chart)
+
+        else:
+            st.info("Transaction-channel data unavailable.")
+
+    st.markdown("---")
+
+    # =====================================================================
+    # 5. STRESS TESTING
+    # =====================================================================
+
+    st.markdown("### 5. Scenario-Based Portfolio Stress Testing")
+
+    st.caption(
+        "Interactive scenario analysis using transparent elasticity "
+        "assumptions. These assumptions are scenario parameters and "
+        "should be calibrated against bank historical data before production use."
+    )
+
+    exposure = float(kpis["loan_exposure"])
+
+    if exposure > 0:
+
+        s1, s2, s3 = st.columns(3)
+
+        with s1:
+            inflation_shock = st.slider(
+                "Inflation Shock (+%)",
+                min_value=0.0,
+                max_value=12.0,
+                value=3.0,
+                step=0.5,
+            )
+
+        with s2:
+            rate_hike_bps = st.slider(
+                "Interest Rate Shock (+bps)",
+                min_value=0,
+                max_value=600,
+                value=200,
+                step=50,
+            )
+
+        with s3:
+            unemployment_shock = st.slider(
+                "Unemployment Shock (+%)",
+                min_value=0.0,
+                max_value=8.0,
+                value=1.5,
+                step=0.5,
+            )
+
+        baseline_pd = st.number_input(
+            "Baseline PD Assumption",
+            min_value=0.001,
+            max_value=0.50,
+            value=0.0784,
+            step=0.005,
+            format="%.4f",
+        )
+
+        lgd = st.number_input(
+            "LGD Assumption",
+            min_value=0.05,
+            max_value=1.00,
+            value=0.45,
+            step=0.05,
+            format="%.2f",
+        )
+
+        stress_result = stress_test(
+            portfolio_exposure=exposure,
+            baseline_pd=baseline_pd,
+            lgd=lgd,
+            inflation_shock=inflation_shock,
+            rate_hike_bps=rate_hike_bps,
+            unemployment_shock=unemployment_shock,
+        )
+
+        st.markdown("#### Scenario Impact")
+
+        r1, r2, r3, r4 = st.columns(4)
+
+        with r1:
+            st.metric(
+                "Baseline PD",
+                f"{stress_result['baseline_pd'] * 100:.2f}%"
+            )
+
+        with r2:
+            st.metric(
+                "Stressed PD",
+                f"{stress_result['stressed_pd'] * 100:.2f}%",
+                f"+{stress_result['pd_uplift'] * 100:.2f} pp",
+                delta_color="inverse",
+            )
+
+        with r3:
+            st.metric(
+                "Baseline Expected Loss",
+                f"EGP {stress_result['baseline_expected_loss']:,.0f}"
+            )
+
+        with r4:
+            st.metric(
+                "Incremental Expected Loss",
+                f"EGP {stress_result['incremental_expected_loss']:,.0f}",
+                delta_color="inverse",
+            )
+
+        curve_df = build_stress_curve(
+            portfolio_exposure=exposure,
+            baseline_pd=baseline_pd,
+            lgd=lgd,
+            shock_name="Inflation",
+        )
+
+        curve_df = curve_df.set_index("Shock")
+
+        st.markdown("#### Inflation Sensitivity Curve")
+
+        st.line_chart(
+            curve_df[
+                [
+                    "Stressed PD",
+                    "Expected Loss",
+                ]
+            ]
+        )
+
+    else:
+        st.info(
+            "Stress testing requires a positive portfolio exposure."
+        )
+
+    st.markdown("---")
+
+    # =====================================================================
+    # 6. DATA QUALITY / ANALYTICS READINESS
+    # =====================================================================
+
+    st.markdown("### 6. Analytics Data Quality")
+
+    quality_df = calculate_data_quality(
+        core_banking_data
+    )
+
+    st.dataframe(
+        quality_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "Data-quality monitoring is included to make analytics "
+        "limitations visible before portfolio metrics are used for "
+        "business decisions."
+    )
 
 # TAB 6: Raw JSON
 with tab6:
