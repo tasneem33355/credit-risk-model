@@ -25,6 +25,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from portfolio_analytics import (
+    load_core_banking_data,
+    prepare_data,
+)
+
 st.markdown(
     """
     <style>
