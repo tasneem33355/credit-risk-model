@@ -25,11 +25,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from portfolio_analytics import (
-    load_core_banking_data,
-    prepare_data,
-)
-
 st.markdown(
     """
     <style>
@@ -52,7 +47,7 @@ st.markdown(
 # dashboard works as a drop-in file with the current repository.
 # -----------------------------------------------------------------------------
 
-WORKBOOK_NAME = "bank_data_sample_Ammar Elgazar.xlsx"
+WORKBOOK_NAME = "sample_core_banking.xlsx"
 
 
 def _empty_bank_data() -> Dict[str, pd.DataFrame]:
@@ -124,6 +119,10 @@ def portfolio_kpis(data: Dict[str, pd.DataFrame]) -> Dict[str, float]:
     active_loans = loans[loans["status"].astype(str).str.lower().eq("active")] if "status" in loans.columns else loans
     active_accounts = accounts[accounts["status"].astype(str).str.lower().eq("active")] if "status" in accounts.columns else accounts
 
+    active_loans = active_loans.copy()
+    if "principal_amount" not in active_loans.columns and "loan_amount" in active_loans.columns:
+        active_loans["principal_amount"] = _num(active_loans, "loan_amount")
+
     exposure = _num(active_loans, "principal_amount").sum()
     balances = _num(active_accounts, "balance").sum()
     loan_count = len(active_loans)
@@ -168,7 +167,10 @@ def customer_analytics(data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     loan_agg = pd.DataFrame(index=customers[customer_id].unique())
     if not loans.empty and customer_id in loans.columns:
         l = loans.copy()
-        l["principal_amount"] = _num(l, "principal_amount")
+        if "principal_amount" not in l.columns and "loan_amount" in l.columns:
+            l["principal_amount"] = _num(l, "loan_amount")
+        else:
+            l["principal_amount"] = _num(l, "principal_amount")
         loan_agg = l.groupby(customer_id).agg(
             loan_count=("loan_id", "nunique") if "loan_id" in l.columns else (customer_id, "size"),
             total_exposure=("principal_amount", "sum"),
@@ -191,12 +193,18 @@ def loan_analytics(data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     if loans.empty:
         return pd.DataFrame()
 
-    loans["principal_amount"] = _num(loans, "principal_amount")
-    loans["interest_rate"] = _num(loans, "interest_rate")
-    loans["loan_type"] = loans.get("loan_type", "Unknown").astype(str).str.title()
-    loans["status"] = loans.get("status", "Unknown").astype(str).str.title()
+    if "principal_amount" not in loans.columns and "loan_amount" in loans.columns:
+        loans["principal_amount"] = _num(loans, "loan_amount")
+    else:
+        loans["principal_amount"] = _num(loans, "principal_amount")
 
-    if "tenure_months" in loans.columns:
+    loans["interest_rate"] = _num(loans, "interest_rate")
+    loans["loan_type"] = loans["loan_type"].astype(str).str.title() if "loan_type" in loans.columns else "Unknown"
+    loans["status"] = loans["status"].astype(str).str.title() if "status" in loans.columns else "Unknown"
+
+    if "tenure_months" not in loans.columns and "tenor_months" in loans.columns:
+        loans["tenure_months"] = _num(loans, "tenor_months")
+    elif "tenure_months" in loans.columns:
         loans["tenure_months"] = _num(loans, "tenure_months")
 
     return loans
@@ -302,16 +310,8 @@ with st.spinner("Processing forensic and predictive features..."):
     app_features, history_features = adapt_application_to_model_inputs(payload)
 
 # Load portfolio data independently from the selected application.
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-CORE_BANKING_FILE = os.path.join(
-    BASE_DIR,
-    "sample_core_banking.xlsx"
-)
-
-core_banking_data = prepare_data(
-    load_core_banking_data(CORE_BANKING_FILE)
-)
+CORE_BANKING_FILE = os.path.join(BASE_DIR, "sample_core_banking.xlsx")
+bank_data = prepare_bank_data(load_bank_data(CORE_BANKING_FILE))
 
 # -----------------------------------------------------------------------------
 # Application header
@@ -477,7 +477,10 @@ with tab4:
 # TAB 5 - REAL DATA-DRIVEN PORTFOLIO ANALYTICS
 with tab5:
     st.subheader("📈 Portfolio Intelligence & Scenario Analytics")
-    st.caption("Portfolio metrics are calculated from the repository's core-banking workbook; no placeholder portfolio totals are used.")
+    st.caption(
+        f"Portfolio metrics are calculated from `{WORKBOOK_NAME}`; "
+        "no placeholder portfolio totals are used."
+    )
 
     customers = bank_data["Customers"]
     accounts = bank_data["Accounts"]
@@ -488,6 +491,7 @@ with tab5:
 
     if all(df.empty for df in bank_data.values()):
         st.warning(f"Core-banking workbook not found: `{WORKBOOK_NAME}`")
+        st.caption(f"Expected file location: `{CORE_BANKING_FILE}`")
     else:
         # 1. Portfolio overview
         st.markdown("### 1. Portfolio Overview")
@@ -517,7 +521,20 @@ with tab5:
                 segment_counts = cust["customer_segment"].value_counts().rename_axis("Segment").to_frame("Customers")
                 st.bar_chart(segment_counts)
             with c2:
-                display_cols = [c for c in ["customer_id", "full_name", "kyc_status", "account_count", "total_balance", "loan_count", "total_exposure"] if c in cust.columns]
+                preferred_cols = [
+                    "customer_id",
+                    "full_name",
+                    "customer_name",
+                    "kyc_status",
+                    "segment",
+                    "city",
+                    "account_count",
+                    "total_balance",
+                    "loan_count",
+                    "total_exposure",
+                    "relationship_depth",
+                ]
+                display_cols = [c for c in preferred_cols if c in cust.columns]
                 st.dataframe(
                     cust[display_cols].sort_values("total_exposure", ascending=False).head(20),
                     use_container_width=True,
@@ -544,21 +561,50 @@ with tab5:
                     st.bar_chart(by_status.set_index("status")["Exposure"])
                     st.dataframe(by_status, use_container_width=True, hide_index=True)
 
-            if not branches.empty and "branch_id" in loans.columns and "branch_id" in branches.columns:
-                pass
+            branch_view = loans.copy()
 
-            if "customer_id" in loans.columns and not customers.empty and "customer_id" in customers.columns and "branch_id" in customers.columns:
-                branch_view = loans.merge(
-                    customers[["customer_id", "branch_id"]].drop_duplicates("customer_id"),
-                    on="customer_id",
+            if "branch_id" not in branch_view.columns:
+                if (
+                    "customer_id" in branch_view.columns
+                    and not customers.empty
+                    and "customer_id" in customers.columns
+                    and "branch_id" in customers.columns
+                ):
+                    branch_view = branch_view.merge(
+                        customers[["customer_id", "branch_id"]].drop_duplicates("customer_id"),
+                        on="customer_id",
+                        how="left",
+                    )
+
+            if (
+                not branches.empty
+                and "branch_id" in branch_view.columns
+                and "branch_id" in branches.columns
+            ):
+                branch_view = branch_view.merge(
+                    branches.drop_duplicates("branch_id"),
+                    on="branch_id",
                     how="left",
                 )
-                if not branches.empty and "branch_id" in branches.columns:
-                    branch_view = branch_view.merge(branches, on="branch_id", how="left")
-                if "region" in branch_view.columns:
-                    by_region = branch_view.groupby("region", dropna=False)["principal_amount"].sum().sort_values(ascending=False)
-                    st.markdown("#### Regional Exposure")
-                    st.bar_chart(by_region)
+
+            if "region" in branch_view.columns:
+                by_region = (
+                    branch_view.groupby("region", dropna=False)["principal_amount"]
+                    .sum()
+                    .sort_values(ascending=False)
+                )
+                st.markdown("#### Regional Exposure")
+                st.bar_chart(by_region)
+
+                region_table = by_region.reset_index()
+                region_table.columns = ["Region", "Exposure"]
+                total_region_exposure = region_table["Exposure"].sum()
+                region_table["Exposure Share"] = (
+                    region_table["Exposure"] / total_region_exposure
+                    if total_region_exposure
+                    else 0
+                )
+                st.dataframe(region_table, use_container_width=True, hide_index=True)
 
         st.markdown("---")
 
