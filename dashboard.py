@@ -1,7 +1,7 @@
 """
 Streamlit Web Dashboard for Credit Risk & Application Fraud Analysis
 =====================================================================
-Platform: Smart Financing & Credit Request Analysis Platform (CrediX / ZAWOLF)
+Platform: Smart Financing & Credit Request Analysis Platform (CrediX)
 Language: Professional Financial English
 Target: Credit Underwriters, Risk Managers, and Compliance Officers
 """
@@ -11,14 +11,12 @@ import json
 import os
 import sys
 
-# Ensure local imports
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
 from fraud_engine import CreditFraudEngine
 from adapter import adapt_application_to_model_inputs
 
-# Page configuration
 st.set_page_config(
     page_title="CrediX | Enterprise Credit Decisioning & Fraud Engine",
     page_icon="🏦",
@@ -26,15 +24,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom CSS for modern enterprise financial UI
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
-    
     .main-header {
         font-size: 2rem;
         font-weight: 700;
@@ -42,13 +37,11 @@ st.markdown("""
         letter-spacing: -0.02em;
         margin-bottom: 0.25rem;
     }
-    
     .sub-header {
         font-size: 1rem;
         color: #64748B;
         margin-bottom: 1.25rem;
     }
-    
     .badge-clean {
         background-color: #ECFDF5;
         color: #065F46;
@@ -59,7 +52,6 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
-    
     .badge-warn {
         background-color: #FFFBEB;
         color: #92400E;
@@ -70,7 +62,6 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
-    
     .badge-critical {
         background-color: #FEF2F2;
         color: #991B1B;
@@ -81,18 +72,9 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
-    
-    .metric-card {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 10px;
-        padding: 16px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Fraud Engine
 @st.cache_resource
 def get_fraud_engine():
     return CreditFraudEngine()
@@ -161,12 +143,12 @@ with col_badge:
 
 st.markdown("---")
 
-# KPI Summary Cards
+# KPI Summary Cards (Top Layer)
 kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
 with kpi1:
     st.metric(
-        label="Fraud Risk Score",
+        label="Ensemble Fraud Score",
         value=f"{assessment['fraud_risk_score']:.2f} / 1.00",
         delta="Clean Audit" if assessment['fraud_risk_score'] <= 0.25 else "High Alert",
         delta_color="normal" if assessment['fraud_risk_score'] <= 0.25 else "inverse"
@@ -175,7 +157,7 @@ with kpi1:
 with kpi2:
     mismatch = assessment["metrics"]["income_mismatch_ratio"] * 100
     st.metric(
-        label="Salary vs Bank Inflow Mismatch",
+        label="Salary vs Inflow Mismatch",
         value=f"{mismatch:.1f}%",
         delta="Fully Reconciled" if mismatch <= 10 else f"{mismatch:.0f}% Discrepancy",
         delta_color="normal" if mismatch <= 10 else "inverse"
@@ -202,23 +184,22 @@ with kpi4:
 # Executive Recommendation Banner
 action_code = assessment["recommended_action"]
 if risk_level == "LOW":
-    st.success(f"**Recommended Underwriting Action:** `PROCEED_TO_CREDIT_EVALUATION` — Application verified with clean forensic trail.")
+    st.success(f"**Recommended Action:** `PROCEED_TO_CREDIT_EVALUATION` — All cross-document and ML fraud screenings passed.")
 elif risk_level in ["MEDIUM", "HIGH"]:
-    st.warning(f"**Recommended Underwriting Action:** `{action_code}` — Discrepancies detected. Manual officer review required.")
+    st.warning(f"**Recommended Action:** `{action_code}` — Elevated risk patterns identified. Senior manual review required.")
 else:
-    st.error(f"**Recommended Underwriting Action:** `REJECT_SUSPECTED_FRAUD` — Fatal document alteration or income inflation identified.")
+    st.error(f"**Recommended Action:** `REJECT_SUSPECTED_FRAUD` — Critical document alteration or income falsification identified.")
 
 # Tabbed Deep-Dive
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 Executive Summary (XAI)",
+    "🤖 Machine Learning Models",
     "🔍 Forensic Audit & CBE Codes",
     "📊 Credit Risk & Financials",
     "💻 Raw Enriched JSON"
 ])
 
-# -----------------------------------------------------------------------------
-# TAB 1: Executive Summary & XAI
-# -----------------------------------------------------------------------------
+# TAB 1: Executive Summary
 with tab1:
     st.subheader("Underwriter AI Narrative (Explainable Intelligence)")
     st.info(assessment["explainable_ai"]["executive_summary_en"])
@@ -241,12 +222,42 @@ with tab1:
         math_ok = assessment["verification_checklist"]["bank_statement_math_verified"]
         st.write("🧮 **Statement Running Balance Math:**", "✅ Balanced" if math_ok else "❌ Arithmetic Anomaly")
 
-# -----------------------------------------------------------------------------
-# TAB 2: Forensic Audit & CBE Reason Codes
-# -----------------------------------------------------------------------------
+# TAB 2: Machine Learning Models (NEW DEDICATED TAB)
 with tab2:
-    st.subheader("Regulatory Audit Violations & Policy Codes")
+    st.subheader("Dual Machine Learning Screening Stack")
+    st.caption("Fusing Supervised Classification with Unsupervised Multi-dimensional Anomaly Detection")
     
+    ml_col1, ml_col2 = st.columns(2)
+    ml_meta = assessment["ml_models_assessment"]
+    
+    with ml_col1:
+        st.markdown("#### 🌲 Supervised Model: XGBoost Fraud Classifier")
+        xgb_prob = ml_meta["xgboost_fraud_probability"]
+        st.metric(
+            label="XGBoost Fraud Probability P(Fraud)",
+            value=f"{xgb_prob * 100:.1f}%",
+            delta="Normal" if xgb_prob <= 0.30 else "High Fraud Probability",
+            delta_color="normal" if xgb_prob <= 0.30 else "inverse"
+        )
+        st.progress(float(xgb_prob))
+        st.write("Trained to detect fraudulent application profiles across income mismatch, debt stress, and velocity.")
+        
+    with ml_col2:
+        st.markdown("#### 🔍 Unsupervised Model: Isolation Forest Anomaly Index")
+        iso_score = ml_meta["isolation_forest_anomaly_score"]
+        iso_flag = ml_meta["isolation_forest_anomaly_detected"]
+        st.metric(
+            label="Isolation Forest Outlier Score",
+            value=f"{iso_score:.2f} / 1.00",
+            delta="Normal Inlier" if not iso_flag else "Multivariate Outlier",
+            delta_color="normal" if not iso_flag else "inverse"
+        )
+        st.progress(float(iso_score))
+        st.write("Screens high-dimensional cashflow dispersion, sudden liquidity spikes, and non-linear behavior.")
+
+# TAB 3: Forensic Audit & CBE Codes
+with tab3:
+    st.subheader("Regulatory Audit Violations & Policy Codes")
     if assessment["triggered_rules"]:
         for rule in assessment["triggered_rules"]:
             with st.expander(f"[{rule['severity']}] {rule['rule_code']} — {rule['rule_name_en']}", expanded=True):
@@ -258,24 +269,18 @@ with tab2:
         st.success("✅ Zero regulatory policy violations detected across uploaded documents.")
 
     st.markdown("---")
-    st.subheader("Behavioral Banking Anomalies (Layer 2 Screening)")
+    st.subheader("Behavioral Banking Anomalies")
     for anom in assessment["behavioral_anomalies"]:
         col_status, col_desc = st.columns([1, 4])
         with col_status:
-            if anom["detected"]:
-                st.markdown(f"🚨 **{anom['anomaly_name']}**")
-            else:
-                st.markdown(f"🟢 **{anom['anomaly_name']}**")
+            st.markdown(f"{'🚨' if anom['detected'] else '🟢'} **{anom['anomaly_name']}**")
         with col_desc:
             st.write(anom["explanation_en"])
 
-# -----------------------------------------------------------------------------
-# TAB 3: Credit Risk & Financials
-# -----------------------------------------------------------------------------
-with tab3:
+# TAB 4: Credit Risk & Financials
+with tab4:
     st.subheader("Financial Standing & Bureau Profile")
     col_cr1, col_cr2 = st.columns(2)
-    
     with col_cr1:
         st.markdown("#### Employment & Income Profile")
         dec_salary = payload.get("salary_certificate_fields", {}).get("declared_net_salary", {}).get("value", 0)
@@ -297,10 +302,8 @@ with tab3:
     st.markdown("#### Canonical Features Ready for Downstream Risk Model (413 Features Sample)")
     st.dataframe([app_features], use_container_width=True)
 
-# -----------------------------------------------------------------------------
-# TAB 4: Raw JSON Viewer
-# -----------------------------------------------------------------------------
-with tab4:
+# TAB 5: Raw JSON
+with tab5:
     st.subheader("Enriched Contract JSON Payload")
     enriched_payload = engine.enrich_payload(payload)
     st.json(enriched_payload)
