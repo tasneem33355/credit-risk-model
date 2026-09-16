@@ -297,8 +297,16 @@ with st.spinner("Processing forensic and predictive features..."):
     app_features, history_features = adapt_application_to_model_inputs(payload)
 
 # Load portfolio data independently from the selected application.
-CORE_BANKING_FILE = os.path.join(BASE_DIR, WORKBOOK_NAME)
-bank_data = prepare_bank_data(load_bank_data(CORE_BANKING_FILE))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CORE_BANKING_FILE = os.path.join(
+    BASE_DIR,
+    "sample_core_banking.xlsx"
+)
+
+core_banking_data = prepare_data(
+    load_core_banking_data(CORE_BANKING_FILE)
+)
 
 # -----------------------------------------------------------------------------
 # Application header
