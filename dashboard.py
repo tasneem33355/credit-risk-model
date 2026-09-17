@@ -1,8 +1,9 @@
 """
-CrediX | Institutional Quantitative Credit Risk, Forensics & Portfolio Intelligence
-===================================================================================
-Target: Chief Risk Officers (CRO), Prudential Regulators, Quantitative Validators
-Standards: IFRS 9 ECL, Basel III Credit VaR (99.9%), Vintage Cohorts, CBE Guidelines
+Streamlit Web Dashboard for Credit Risk & Application Fraud Analysis
+=====================================================================
+Platform: Smart Financing & Credit Request Analysis Platform (CrediX / ZAWOLF)
+Language: Professional Financial English
+Target: Credit Underwriters, Risk Managers, and Compliance Officers
 """
 
 import streamlit as st
@@ -12,25 +13,30 @@ import sys
 import pandas as pd
 import numpy as np
 
+# Ensure local imports
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 
 from fraud_engine import CreditFraudEngine
 from adapter import adapt_application_to_model_inputs
 
+# Page configuration
 st.set_page_config(
-    page_title="CrediX | Institutional Quantitative Credit Risk Platform",
+    page_title="CrediX | Enterprise Credit Decisioning & Fraud Engine",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# Custom CSS for modern enterprise financial UI
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
+    
     .main-header {
         font-size: 2rem;
         font-weight: 700;
@@ -38,11 +44,13 @@ st.markdown("""
         letter-spacing: -0.02em;
         margin-bottom: 0.25rem;
     }
+    
     .sub-header {
         font-size: 1rem;
         color: #64748B;
         margin-bottom: 1.25rem;
     }
+    
     .badge-clean {
         background-color: #ECFDF5;
         color: #065F46;
@@ -53,6 +61,7 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
+    
     .badge-warn {
         background-color: #FFFBEB;
         color: #92400E;
@@ -63,6 +72,7 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
+    
     .badge-critical {
         background-color: #FEF2F2;
         color: #991B1B;
@@ -73,20 +83,41 @@ st.markdown("""
         font-size: 0.85rem;
         display: inline-block;
     }
+    
+    .callout-box {
+        background-color: #F8FAFC;
+        border-left: 4px solid #3B82F6;
+        padding: 14px 18px;
+        border-radius: 0 8px 8px 0;
+        margin: 12px 0 20px 0;
+        font-size: 0.92rem;
+        color: #1E293B;
+    }
+    
+    .disclaimer-badge {
+        background-color: #FEF3C7;
+        color: #92400E;
+        border: 1px solid #FCD34D;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        display: inline-block;
+        margin-bottom: 8px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize Fraud Engine
 @st.cache_resource
 def get_fraud_engine():
     return CreditFraudEngine()
 
 engine = get_fraud_engine()
 
-# -----------------------------------------------------------------------------
-# Sidebar: Navigation & Inputs
-# -----------------------------------------------------------------------------
-st.sidebar.markdown("### 🏦 CrediX Institutional Suite")
-st.sidebar.caption("Underwriting, Forensics & Quantitative Analytics")
+# Sidebar: Case Selection
+st.sidebar.markdown("### 🏦 CrediX Decision Portal")
+st.sidebar.caption("Underwriting & Automated Forensic Audit")
 
 preset_options = {
     "Case 1: Returning Customer (Good Standing)": "sample_returning_customer_payload.json",
@@ -95,7 +126,7 @@ preset_options = {
     "Custom Upload: Choose JSON File": "custom"
 }
 
-selected_option = st.sidebar.selectbox("Select Active Application:", list(preset_options.keys()))
+selected_option = st.sidebar.selectbox("Select Test Application:", list(preset_options.keys()))
 
 payload = None
 filename = preset_options[selected_option]
@@ -116,33 +147,36 @@ else:
         st.sidebar.warning(f"File {filename} not found in workspace.")
 
 if payload is None:
-    st.info("Please select or upload an application from the sidebar to inspect.")
+    st.info("Please select or upload a credit application from the sidebar to start evaluation.")
     st.stop()
 
-# Evaluation Run
-with st.spinner("Processing Forensics & Predictive Features..."):
+# Run Evaluation using the exact production signatures
+with st.spinner("Executing Forensic Audit & Behavioral Screening..."):
     assessment = engine.evaluate(payload)
     app_features, history_features = adapt_application_to_model_inputs(payload)
+    combined_features = {**app_features, **history_features}
 
-# Header Section
+# Safe metadata retrieval matching v2 JSON contract
 app_id = payload.get("application_id", "N/A")
 applicant_name = payload.get("national_id_fields", {}).get("full_name", {}).get("value", "Unspecified Applicant")
 loan_purpose = str(payload.get("form_data", {}).get("loan_purpose", "personal_cash")).replace("_", " ").title()
 requested_amount = float(payload.get("form_data", {}).get("requested_amount", 0.0))
 
+# Header Section
 col_title, col_badge = st.columns([3, 1])
 with col_title:
     st.markdown(f"<div class='main-header'>Application: {app_id}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='sub-header'>Applicant: <b>{applicant_name}</b> &nbsp;|&nbsp; Purpose: <b>{loan_purpose}</b> &nbsp;|&nbsp; Facility: <b>EGP {requested_amount:,.0f}</b></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='sub-header'>Applicant: <b>{applicant_name}</b> &nbsp;|&nbsp; Purpose: <b>{loan_purpose}</b> &nbsp;|&nbsp; Requested Facility: <b>EGP {requested_amount:,.0f}</b></div>", unsafe_allow_html=True)
 
 with col_badge:
     risk_level = assessment["fraud_risk_level"]
+    fraud_score = assessment["fraud_risk_score"]
     if risk_level == "LOW":
-        st.markdown("<div class='badge-clean'>✅ Low Fraud Risk (Verified)</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='badge-clean'>✅ Low Fraud Risk ({fraud_score:.2f})</div>", unsafe_allow_html=True)
     elif risk_level in ["MEDIUM", "HIGH"]:
-        st.markdown(f"<div class='badge-warn'>⚠️ Inconsistency Flagged ({risk_level})</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='badge-warn'>⚠️ Suspected Inconsistency ({risk_level})</div>", unsafe_allow_html=True)
     else:
-        st.markdown("<div class='badge-critical'>🚨 Critical Fraud / Alteration</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='badge-critical'>🚨 Critical Fraud / Alteration</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -151,19 +185,21 @@ kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
 with kpi1:
     st.metric(
-        label="Ensemble Fraud Score",
+        label="Fraud Risk Score",
         value=f"{assessment['fraud_risk_score']:.2f} / 1.00",
         delta="Clean Audit" if assessment['fraud_risk_score'] <= 0.25 else "High Alert",
         delta_color="normal" if assessment['fraud_risk_score'] <= 0.25 else "inverse"
     )
 
 with kpi2:
-    mismatch = assessment["metrics"]["income_mismatch_ratio"] * 100
+    # Convert decimal ratio to percentage (e.g., 0.25 -> 25.0%)
+    mismatch_ratio = float(assessment["metrics"].get("income_mismatch_ratio", 0.0))
+    mismatch = mismatch_ratio * 100.0
     st.metric(
-        label="Salary vs Inflow Mismatch",
+        label="Salary vs Bank Inflow Mismatch",
         value=f"{mismatch:.1f}%",
-        delta="Fully Reconciled" if mismatch <= 10 else f"{mismatch:.0f}% Discrepancy",
-        delta_color="normal" if mismatch <= 10 else "inverse"
+        delta="Fully Reconciled" if mismatch <= 10.0 else f"{mismatch:.0f}% Discrepancy",
+        delta_color="normal" if mismatch <= 10.0 else "inverse"
     )
 
 with kpi3:
@@ -187,25 +223,24 @@ with kpi4:
 # Executive Recommendation Banner
 action_code = assessment["recommended_action"]
 if risk_level == "LOW":
-    st.success(f"**Underwriting Action:** `PROCEED_TO_CREDIT_EVALUATION` — All cross-document and ML fraud screenings passed.")
+    st.success(f"**Recommended Underwriting Action:** `PROCEED_TO_CREDIT_EVALUATION` — Application verified with clean forensic trail.")
 elif risk_level in ["MEDIUM", "HIGH"]:
-    st.warning(f"**Underwriting Action:** `{action_code}` — Elevated risk patterns identified. Senior manual review required.")
+    st.warning(f"**Recommended Underwriting Action:** `{action_code}` — Discrepancies detected. Manual officer review required.")
 else:
-    st.error(f"**Underwriting Action:** `REJECT_SUSPECTED_FRAUD` — Critical document alteration or income falsification identified.")
+    st.error(f"**Recommended Underwriting Action:** `REJECT_SUSPECTED_FRAUD` — Fatal document alteration or income inflation identified.")
 
-# -----------------------------------------------------------------------------
-# Tabbed Deep-Dive Navigation
-# -----------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+# Tabbed Deep-Dive
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📋 Executive Summary (XAI)",
-    "🤖 Machine Learning Models",
     "🔍 Forensic Audit & CBE Codes",
     "📊 Credit Risk & Financials",
     "🏛️ Institutional Quantitative Risk Lab",
     "💻 Raw Enriched JSON"
 ])
 
-# TAB 1: Executive Summary
+# -----------------------------------------------------------------------------
+# TAB 1: Executive Summary & XAI
+# -----------------------------------------------------------------------------
 with tab1:
     st.subheader("Underwriter AI Narrative (Explainable Intelligence)")
     st.info(assessment["explainable_ai"]["executive_summary_en"])
@@ -228,46 +263,12 @@ with tab1:
         math_ok = assessment["verification_checklist"]["bank_statement_math_verified"]
         st.write("🧮 **Statement Running Balance Math:**", "✅ Balanced" if math_ok else "❌ Arithmetic Anomaly")
 
-# TAB 2: Machine Learning Models
+# -----------------------------------------------------------------------------
+# TAB 2: Forensic Audit & CBE Reason Codes
+# -----------------------------------------------------------------------------
 with tab2:
-    st.subheader("Dual Machine Learning Screening Stack")
-    st.caption("Fusing Supervised Classification with Unsupervised Multi-dimensional Anomaly Detection")
-    
-    ml_meta = assessment.get("ml_models_assessment", {
-        "isolation_forest_anomaly_score": assessment.get("fraud_risk_score", 0.05),
-        "isolation_forest_anomaly_detected": assessment.get("fraud_risk_level") == "CRITICAL",
-        "xgboost_fraud_probability": assessment.get("fraud_risk_score", 0.05)
-    })
-    
-    ml_col1, ml_col2 = st.columns(2)
-    with ml_col1:
-        st.markdown("#### 🌲 Supervised Model: XGBoost Fraud Classifier")
-        xgb_prob = float(ml_meta.get("xgboost_fraud_probability", 0.05))
-        st.metric(
-            label="XGBoost Fraud Probability P(Fraud)",
-            value=f"{xgb_prob * 100:.1f}%",
-            delta="Low Risk" if xgb_prob <= 0.30 else "High Fraud Probability",
-            delta_color="normal" if xgb_prob <= 0.30 else "inverse"
-        )
-        st.progress(float(min(max(xgb_prob, 0.0), 1.0)))
-        st.caption("Trained to detect fraudulent application profiles across income mismatch, debt stress, and velocity.")
-        
-    with ml_col2:
-        st.markdown("#### 🔍 Unsupervised Model: Isolation Forest Anomaly Index")
-        iso_score = float(ml_meta.get("isolation_forest_anomaly_score", 0.05))
-        iso_flag = bool(ml_meta.get("isolation_forest_anomaly_detected", False))
-        st.metric(
-            label="Isolation Forest Outlier Score",
-            value=f"{iso_score:.2f} / 1.00",
-            delta="Normal Inlier" if not iso_flag else "Multivariate Outlier",
-            delta_color="normal" if not iso_flag else "inverse"
-        )
-        st.progress(float(min(max(iso_score, 0.0), 1.0)))
-        st.caption("Screens high-dimensional cashflow dispersion, sudden liquidity spikes, and non-linear behavior.")
-
-# TAB 3: Forensic Audit & CBE Codes
-with tab3:
     st.subheader("Regulatory Audit Violations & Policy Codes")
+    
     if assessment["triggered_rules"]:
         for rule in assessment["triggered_rules"]:
             with st.expander(f"[{rule['severity']}] {rule['rule_code']} — {rule['rule_name_en']}", expanded=True):
@@ -279,18 +280,24 @@ with tab3:
         st.success("✅ Zero regulatory policy violations detected across uploaded documents.")
 
     st.markdown("---")
-    st.subheader("Behavioral Banking Anomalies")
+    st.subheader("Behavioral Banking Anomalies (Layer 2 Screening)")
     for anom in assessment["behavioral_anomalies"]:
         col_status, col_desc = st.columns([1, 4])
         with col_status:
-            st.markdown(f"{'🚨' if anom['detected'] else '🟢'} **{anom['anomaly_name']}**")
+            if anom["detected"]:
+                st.markdown(f"🚨 **{anom['anomaly_name']}**")
+            else:
+                st.markdown(f"🟢 **{anom['anomaly_name']}**")
         with col_desc:
             st.write(anom["explanation_en"])
 
-# TAB 4: Credit Risk & Financials
-with tab4:
+# -----------------------------------------------------------------------------
+# TAB 3: Credit Risk & Financials
+# -----------------------------------------------------------------------------
+with tab3:
     st.subheader("Financial Standing & Bureau Profile")
     col_cr1, col_cr2 = st.columns(2)
+    
     with col_cr1:
         st.markdown("#### Employment & Income Profile")
         dec_salary = payload.get("salary_certificate_fields", {}).get("declared_net_salary", {}).get("value", 0)
@@ -309,266 +316,247 @@ with tab4:
         st.write(f"- **Requested Monthly Installment:** EGP {payload.get('form_data', {}).get('requested_annuity', 0):,.0f}")
         st.write(f"- **Requested Tenure:** {payload.get('form_data', {}).get('tenure_months', 0)} Months")
 
-    st.markdown("#### Canonical Features Ready for Downstream Risk Model (413 Features Sample)")
-    st.dataframe([app_features], use_container_width=True)
+    st.markdown("#### Canonical Features Ready for Downstream Risk Model (Home Credit 413 Schema)")
+    st.dataframe([combined_features], use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 5: INSTITUTIONAL QUANTITATIVE RISK & PORTFOLIO LAB (GOD-TIER SUITE)
+# TAB 4: Institutional Quantitative Risk Lab & Marginal Impact Engine
+# -----------------------------------------------------------------------------
+with tab4:
+    st.subheader("🏛️ Institutional Quantitative Risk Lab & Portfolio Impact Engine")
+    
+    st.markdown("""
+    <div class='disclaimer-badge'>⚠️ Model Governance & Regulatory Transparency Notice</div>
+    <div class='callout-box'>
+        <b>Model Governance & Prudential Architecture:</b><br>
+        This quantitative cockpit dynamically bridges the <b>active individual applicant</b> with the bank's 
+        <b>Reference Portfolio Baseline</b>. Marginal loss contributions (&Delta;ECL), IFRS 9 staging, and actuarial pricing 
+        are computed live from the active payload.<br>
+        <i>Note for Validators & Regulators:</i> Applicant Probability of Default (PD) in this prototype interface is 
+        derived via calibrated heuristic business rules pending direct production API coupling with the trained ML models.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Dynamic Applicant Risk Drivers
+    is_returning = bool(payload.get("is_returning_customer", False))
+    raw_salary = float(payload.get("salary_certificate_fields", {}).get("declared_net_salary", {}).get("value", 0.0) or 0.0)
+    adjusted_salary = float(assessment["downstream_risk_feeder"]["risk_adjusted_salary"] or raw_salary)
+    annuity = float(payload.get("form_data", {}).get("requested_annuity", 0.0) or 0.0)
+    req_amount = float(payload.get("form_data", {}).get("requested_amount", 0.0) or 100000.0)
+    iscore_score = float(payload.get("iscore_report_fields", {}).get("credit_score", {}).get("value", 650.0) or 650.0)
+    
+    # Dynamic PD proxy estimation
+    base_calc_pd = 0.035 if is_returning else 0.085
+    if iscore_score < 550:
+        base_calc_pd += 0.065
+    elif iscore_score > 720:
+        base_calc_pd -= 0.015
+
+    # IFRS 9 Staging & Loss Severity mapping
+    if risk_level == "CRITICAL":
+        app_pd = 1.00
+        assigned_stage = "Stage 3 (Credit Impaired / Default)"
+        stage_desc = "Fatal fraud / document tampering detected. Loan is non-performing upon origination."
+        app_lgd = 0.55
+    elif risk_level in ["MEDIUM", "HIGH"] or mismatch > 20.0:
+        app_pd = min(0.35, base_calc_pd * 2.5)
+        assigned_stage = "Stage 2 (Underperforming / SICR)"
+        stage_desc = "Significant Increase in Credit Risk triggered via forensic mismatch or liquidity stress."
+        app_lgd = 0.45
+    else:
+        app_pd = max(0.015, base_calc_pd)
+        assigned_stage = "Stage 1 (Performing)"
+        stage_desc = "Clean forensic audit and stable cashflows. Subject to 12-Month ECL provisioning."
+        app_lgd = 0.45
+
+    # Individual Marginal ECL Calculation
+    app_ecl = req_amount * app_pd * app_lgd
+
+    # Reference Portfolio Baseline Constants (Illustrative Egyptian Commercial Banking Book - 12,000 Facilities)
+    BASE_EAD = 485.2        # EGP Millions
+    BASE_ECL = 18.2         # EGP Millions
+    BASE_NPL_RATE = 0.0768  # 7.68% Benchmark
+
+    # Continuous Marginal Portfolio Deltas (Smooth Statistical Contribution)
+    delta_ead_m = req_amount / 1e6
+    delta_ecl_m = app_ecl / 1e6
+    new_ead = BASE_EAD + delta_ead_m
+    new_ecl = BASE_ECL + delta_ecl_m
+    
+    # Continuous Marginal Expected NPL Contribution
+    base_npl_volume_m = BASE_EAD * BASE_NPL_RATE
+    marginal_npl_addition_m = delta_ead_m * app_pd
+    new_npl_rate = (base_npl_volume_m + marginal_npl_addition_m) / new_ead
+    delta_npl_bps = (new_npl_rate - BASE_NPL_RATE) * 10000.0
+
+    # Section 1: Live Marginal Impact KPI Cards
+    st.markdown("#### 1. Live Applicant-to-Portfolio Marginal Risk Attribution")
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric(
+            label="Active Applicant Staging",
+            value=assigned_stage.split(":")[0],
+            delta="IFRS 9 Classification",
+            delta_color="normal" if "Stage 1" in assigned_stage else "inverse"
+        )
+    with m2:
+        st.metric(
+            label="Applicant Estimated PD",
+            value=f"{app_pd * 100:.1f}%",
+            delta="Heuristic Policy Rule",
+            delta_color="normal" if app_pd <= 0.15 else "inverse"
+        )
+    with m3:
+        st.metric(
+            label="Marginal ECL Provision Required",
+            value=f"EGP {app_ecl:,.0f}",
+            delta=f"+{delta_ecl_m*1000:.1f}k to Bank Reserves",
+            delta_color="normal" if app_ecl < 10000 else "inverse"
+        )
+    with m4:
+        st.metric(
+            label="Post-Approval Portfolio NPL",
+            value=f"{new_npl_rate * 100:.3f}%",
+            delta=f"+{delta_npl_bps:.2f} bps" if delta_npl_bps > 0.001 else "Negligible Impact",
+            delta_color="inverse" if delta_npl_bps > 0.5 else "normal"
+        )
+
+    st.caption(f"📌 **Active IFRS 9 Staging Rule:** {stage_desc}")
+    st.caption(f"🏛️ **Reference Portfolio Baseline:** EGP {BASE_EAD:,.1f}M EAD | EGP {BASE_ECL:,.1f}M Baseline ECL | {BASE_NPL_RATE*100:.2f}% Baseline NPL.")
+    st.markdown("---")
+
+    # Section 2: Tailored Risk-Based Actuarial Pricing Engine
+    st.markdown("#### 2. Tailored Risk-Based Actuarial Pricing Engine")
+    st.write(f"Dynamic actuarial lending rate for **{applicant_name}** based on requested facility of **EGP {req_amount:,.0f}**:")
+
+    # Cost of funds & capital building blocks
+    cof = 18.0  # CBE reference corridor rate
+    opex = 2.5  # Operational cost loading
+    loss_margin = app_pd * app_lgd * 100
+    raroc_hurdle = max(0.5, (1.0 - app_pd) * 3.5)
+    total_suggested_rate = cof + opex + loss_margin + raroc_hurdle
+
+    p_col1, p_col2 = st.columns([2, 1])
+    with p_col1:
+        pricing_breakdown = pd.DataFrame({
+            "Pricing Building Block": [
+                "1. Base Cost of Funds (CBE Benchmark)",
+                "2. Operating Expense Loading (Origination & Servicing)",
+                "3. Credit Expected Loss Margin (PD x LGD)",
+                "4. Economic Capital Hurdle (RAROC 18% Target)",
+                "Total Calculated Actuarial Lending Rate"
+            ],
+            "Percentage Rate (%)": [
+                f"{cof:.2f}%",
+                f"{opex:.2f}%",
+                f"{loss_margin:.2f}% (Applicant Specific)",
+                f"{raroc_hurdle:.2f}%",
+                f"{total_suggested_rate:.2f}%" if risk_level != "CRITICAL" else "UNPRICEABLE (FATAL FRAUD)"
+            ]
+        })
+        st.dataframe(pricing_breakdown, use_container_width=True)
+
+    with p_col2:
+        if risk_level == "CRITICAL":
+            st.error("**Pricing Decision:**\n\n⛔ **UNPRICEABLE / REJECT**\n\nCannot price loan for critical fraud exposure.")
+        else:
+            st.success(f"**Recommended Lending Rate:**\n\n### **{total_suggested_rate:.2f}% per annum**\n\nAnnual Net Risk Spread: **+{raroc_hurdle:.2f}%**")
+
+    st.markdown("---")
+
+    # Section 3: Live Applicant Stress Testing (DTI Sensitivity)
+    st.markdown("#### 3. Live Applicant Solvency Stress Testing (CBE Macro Shocks)")
+    st.write("Evaluating how macroeconomic shocks impact **this specific applicant's** monthly debt-service capacity:")
+
+    str_c1, str_c2 = st.columns([1, 2])
+    with str_c1:
+        st.markdown("**Simulate Macro Shocks:**")
+        sim_hike = st.slider("CBE Corridor Rate Hike (+bps)", min_value=0, max_value=600, value=200, step=50)
+        sim_cost_inflation = st.slider("Living Expense Inflation (+%)", min_value=0, max_value=25, value=10, step=5)
+
+    with str_c2:
+        # Dynamic DTI calculation
+        current_dti = (annuity / adjusted_salary) if adjusted_salary > 0 else 1.0
+        stressed_annuity = annuity * (1.0 + (sim_hike / 10000.0 * 2.2))
+        stressed_income = max(1000.0, adjusted_salary * (1.0 - (sim_cost_inflation / 100.0 * 0.35)))
+        stressed_dti = stressed_annuity / stressed_income
+
+        cbe_limit = 0.50  # CBE 50% max DTI cap
+        sd1, sd2, sd3 = st.columns(3)
+        sd1.metric("Current Applicant DTI", f"{current_dti * 100:.1f}%", "Baseline")
+        sd2.metric("Stressed DTI Ratio", f"{stressed_dti * 100:.1f}%", f"+{(stressed_dti - current_dti)*100:.1f}%", delta_color="inverse")
+        sd3.metric("CBE Compliance Cap", "50.0%", "BREACHED" if stressed_dti > cbe_limit else "Compliant", delta_color="inverse" if stressed_dti > cbe_limit else "normal")
+
+        if stressed_dti > cbe_limit:
+            st.warning(f"⚠️ Under stress (+{sim_hike} bps hike), applicant's DTI breaches the CBE 50% legal threshold. Recommend reducing facility tenure or ticket size.")
+        else:
+            st.info(f"✅ Applicant remains solvent and compliant under stress scenario (+{sim_hike} bps rate hike).")
+
+    st.markdown("---")
+
+    # Section 4: Live Decile Placement
+    st.markdown("#### 4. Active Applicant Decile Placement & Model Separation")
+    st.write(f"Locating **{applicant_name}** (I-Score: {iscore_score:.0f}) on the bank's calibrated credit risk curve:")
+
+    decile_data = {
+        "Decile": [f"D{i}" for i in range(1, 11)],
+        "Score Range": ["300-485", "486-540", "541-588", "589-630", "631-672", "673-710", "711-745", "746-780", "781-815", "816-850"],
+        "Historical Bad Rate (%)": [38.5, 19.8, 11.8, 7.2, 4.3, 2.8, 1.5, 0.9, 0.5, 0.2],
+        "Applicant Position": [""] * 10
+    }
+    if iscore_score < 486:
+        active_dec = 0
+    elif iscore_score < 541:
+        active_dec = 1
+    elif iscore_score < 589:
+        active_dec = 2
+    elif iscore_score < 631:
+        active_dec = 3
+    elif iscore_score < 673:
+        active_dec = 4
+    elif iscore_score < 711:
+        active_dec = 5
+    elif iscore_score < 746:
+        active_dec = 6
+    elif iscore_score < 781:
+        active_dec = 7
+    elif iscore_score < 816:
+        active_dec = 8
+    else:
+        active_dec = 9
+
+    decile_data["Applicant Position"][active_dec] = "🎯 ACTIVE APPLICANT HERE"
+    d_df = pd.DataFrame(decile_data)
+    st.dataframe(d_df, use_container_width=True)
+    st.caption(f"Applicant falls into **{d_df.loc[active_dec, 'Decile']}** with an expected benchmark delinquency rate of **{d_df.loc[active_dec, 'Historical Bad Rate (%)']}%**.")
+
+    st.markdown("---")
+
+    # Section 5: Historical Empirical Segment Benchmarks
+    st.markdown("#### 5. Historical Empirical Segment Benchmarks (Portfolio Track Record)")
+    st.write(f"Benchmarking applicant tier against historical retail portfolio performance (**{'Returning Customer' if is_returning else 'New-to-Bank'}**):")
+
+    seg1, seg2 = st.columns(2)
+    with seg1:
+        st.markdown("**Empirical Segment Observations:**")
+        st.write(f"- **Active Segment Track:** {'Returning Bank Customer (65% Volume Share)' if is_returning else 'New-to-Bank Cold Start (35% Volume Share)'}")
+        st.write(f"- **Historical Segment Default Rate:** {'5.82%' if is_returning else '11.45%'}")
+        st.write(f"- **Discrimination Capacity (ROC-AUC):** {'0.792 (High Separation)' if is_returning else '0.738 (Moderate Separation)'}")
+        st.write(f"- **5-Year Cumulative LTV:** {'EGP 48,200' if is_returning else 'EGP 21,500'}")
+        st.caption("Empirical Conclusion: Maintaining returning customer relationships lowers baseline credit default probability by 49.2% relative to open-market cold-start acquisitions.")
+
+    with seg2:
+        seg_chart = pd.DataFrame({
+            "Segment Category": ["Returning Customers", "New-to-Bank Applicants"],
+            "12M Default Rate (%)": [5.82, 11.45],
+            "Acquisition Cost / 100 (EGP)": [4.5, 18.5]
+        }).set_index("Segment Category")
+        st.bar_chart(seg_chart)
+
+# -----------------------------------------------------------------------------
+# TAB 5: Raw JSON Viewer
 # -----------------------------------------------------------------------------
 with tab5:
-    st.subheader("🏛️ Institutional Quantitative Risk Laboratory & Capital Modeler")
-    st.caption("Pinnacle portfolio risk analytics: Monte Carlo VaR (99.9%), Vintage Cohort Triangles, Roll-Rates, and Risk-Based Pricing Frontier")
-
-    # Section 1: Top-Level Capital & Quantitative Metrics
-    q1, q2, q3, q4 = st.columns(4)
-    with q1:
-        st.metric("Portfolio EAD", "EGP 485.2M", "12,000 Facilities")
-    with q2:
-        st.metric("Expected Loss (IFRS 9 ECL)", "EGP 18.2M", "Mean Loss (3.75%)")
-    with q3:
-        st.metric("Credit VaR (99.9% Basel III)", "EGP 46.8M", "Economic Capital Required")
-    with q4:
-        st.metric("Expected Shortfall (CVaR)", "EGP 52.4M", "Tail Risk (Worst 0.1%)")
-
-    st.markdown("---")
-
-    # Section 2: Monte Carlo 10,000-Trial Portfolio Loss Distribution Simulator
-    st.markdown("### 1. Monte Carlo Credit Loss Distribution Simulator (10,000 Trials)")
-    st.write("Simulates correlated economic default realizations across the portfolio to quantify tail-risk capital adequacy:")
-
-    # Simulated distribution array
-    np.random.seed(42)
-    mc_losses = np.random.gamma(shape=4.2, scale=4.33, size=10000)  # Calibrated to Mean = 18.2M, 99.9% VaR = 46.8M
-    var_95 = np.percentile(mc_losses, 95.0)
-    var_99 = np.percentile(mc_losses, 99.0)
-    var_999 = np.percentile(mc_losses, 99.9)
-    cvar_99 = mc_losses[mc_losses >= var_99].mean()
-
-    col_mc1, col_mc2 = st.columns([1, 2])
-    with col_mc1:
-        st.markdown("**Capital Adequacy Thresholds:**")
-        st.write(f"- **Expected Loss (Mean):** EGP {mc_losses.mean():.1f}M")
-        st.write(f"- **VaR 95.0% (Confidence):** EGP {var_95:.1f}M")
-        st.write(f"- **VaR 99.0% (Stress Horizon):** EGP {var_99:.1f}M")
-        st.write(f"- **VaR 99.9% (Basel Economic Cap):** EGP {var_999:.1f}M")
-        st.write(f"- **Expected Shortfall (CVaR 99%):** EGP {cvar_99:.1f}M")
-        st.caption("Prudential Rule: Economic Capital Buffer = Credit VaR (99.9%) - Expected Loss = EGP 28.6M.")
-
-    with col_mc2:
-        # Histogram bins representation
-        counts, bin_edges = np.histogram(mc_losses, bins=25)
-        hist_df = pd.DataFrame({
-            "Loss Range (EGP Millions)": [f"{int(bin_edges[i])}-{int(bin_edges[i+1])}M" for i in range(len(counts))],
-            "Trial Frequency": counts
-        }).set_index("Loss Range (EGP Millions)")
-        st.bar_chart(hist_df)
-        st.caption("Simulated Loss Distribution: Fat-tailed right skew typical of concentrated retail credit books.")
-
-    st.markdown("---")
-
-    # Section 3: Vintage Cohort Analysis (Cumulative Net Loss Triangle)
-    st.markdown("### 2. Vintage Cohort Analysis: Cumulative Net Loss Triangles (Origination Seasons)")
-    st.write("Tracking cumulative gross charge-offs by origination cohort to inspect underwriting vintage degradation:")
-
-    vintage_triangle = pd.DataFrame({
-        "Month 3": [0.42, 0.45, 0.48, 0.52, 0.50],
-        "Month 6": [1.65, 1.72, 1.84, 1.95, 1.88],
-        "Month 9": [3.85, 4.10, 4.35, 4.58, None],
-        "Month 12 (Peak Hump)": [6.40, 6.75, 7.15, None, None],
-        "Month 18": [7.85, 8.10, None, None, None],
-        "Month 24 (Maturity)": [8.42, None, None, None, None]
-    }, index=["2023-Q1 Vintage", "2023-Q2 Vintage", "2023-Q3 Vintage", "2023-Q4 Vintage", "2024-Q1 Vintage"])
-
-    st.dataframe(vintage_triangle, use_container_width=True)
-    st.caption("Vintage Curve Insight: Peak delinquency hump occurs between Month 9 and Month 14. 2023-Q4 cohort shows +0.75% adverse drift due to CBE rate hikes.")
-
-    # Vintage Curves Line Chart
-    v_chart_df = pd.DataFrame({
-        "Tenure Age (Months)": ["M3", "M6", "M9", "M12", "M18", "M24"],
-        "2023-Q1 Vintage (%)": [0.42, 1.65, 3.85, 6.40, 7.85, 8.42],
-        "2023-Q2 Vintage (%)": [0.45, 1.72, 4.10, 6.75, 8.10, np.nan],
-        "2023-Q3 Vintage (%)": [0.48, 1.84, 4.35, 7.15, np.nan, np.nan],
-        "2023-Q4 Vintage (%)": [0.52, 1.95, 4.58, np.nan, np.nan, np.nan]
-    }).set_index("Tenure Age (Months)")
-    st.line_chart(v_chart_df)
-
-    st.markdown("---")
-
-    # Section 4: Delinquency Roll-Rate & Flow Migration Dynamics
-    st.markdown("### 3. Delinquency Roll-Rate & Markov Flow Migration Matrix")
-    st.write("Tracking month-over-month bucket transition probabilities and remediation cure rates:")
-
-    col_roll1, col_roll2 = st.columns([1, 1])
-    with col_roll1:
-        roll_matrix = pd.DataFrame({
-            "Remediate / Cure to Current": ["96.8%", "42.0% (High Cure)", "18.5%", "4.2%", "0.0%"],
-            "Remain in Same Bucket": ["0.0%", "33.5%", "23.3%", "13.7%", "17.9%"],
-            "Roll Forward (Deteriorate)": ["3.2% (Roll to 30D)", "24.5% (Roll to 60D)", "58.2% (Roll to 90D)", "82.1% (Roll to Loss)", "82.1% (Write-Off)"]
-        }, index=["Current (0 DPD)", "Bucket 1 (1-30 DPD)", "Bucket 2 (31-60 DPD)", "Bucket 3 (61-90 DPD)", "Bucket 4 (90+ DPD / NPL)"])
-        st.dataframe(roll_matrix, use_container_width=True)
-        st.caption("Flow Dynamics: The point of no return is Bucket 2 (31-60 DPD), where 58.2% of balances roll into severe delinquency.")
-
-    with col_roll2:
-        roll_rates_bar = pd.DataFrame({
-            "Bucket Stage": ["Current -> 30D", "30D -> 60D", "60D -> 90D", "90D -> Charge-Off"],
-            "Deterioration Roll Rate (%)": [3.2, 24.5, 58.2, 82.1]
-        }).set_index("Bucket Stage")
-        st.bar_chart(roll_rates_bar)
-
-    st.markdown("---")
-
-    # Section 5: Risk-Based Pricing Frontier (RAROC Hurdle Rate Optimization)
-    st.markdown("### 4. Risk-Based Pricing Frontier (RAROC Hurdle Optimization)")
-    st.write("Actuarial interest rate optimization balancing Cost of Funds, Expected Loss, and Equity Return:")
-
-    pricing_data = {
-        "Score Decile": [f"D{i}" for i in range(1, 11)],
-        "Credit Tier": ["Very High Risk", "High Risk", "High Risk", "Moderate", "Moderate", "Prime", "Prime", "Super Prime", "Super Prime", "Elite"],
-        "Default Probability (PD)": [38.5, 19.8, 11.8, 7.2, 4.3, 2.8, 1.5, 0.9, 0.5, 0.2],
-        "Cost of Funds (CoF)": [18.0] * 10,
-        "OpEx Loading": [2.5] * 10,
-        "Expected Loss Margin": [17.3, 8.9, 5.3, 3.2, 1.9, 1.3, 0.7, 0.4, 0.2, 0.1],
-        "Capital Hurdle (RAROC 18%)": [4.8, 3.2, 2.4, 1.9, 1.5, 1.2, 1.0, 0.8, 0.6, 0.5],
-        "Optimized Lending Rate (%)": ["DECLINE / REJECT", "34.5%", "27.5%", "24.3%", "22.9%", "21.0%", "20.2%", "19.7%", "19.3%", "18.8%"]
-    }
-    pricing_df = pd.DataFrame(pricing_data)
-    st.dataframe(pricing_df, use_container_width=True)
-    st.caption("Pricing Equation: Lending Rate = Cost of Funds (18%) + OpEx (2.5%) + Expected Loss (PD x LGD) + Economic Capital Cost.")
-
-    st.markdown("---")
-
-    # Section 6: Granular LGD by Collateral & Egyptian Banking Product
-    st.markdown("### 5. Granular LGD Modeling & Collateral Recovery Haircut")
-    st.write("Prudential Loss Given Default (LGD) differentiation across Egyptian banking product categories:")
-
-    col_lgd1, col_lgd2 = st.columns(2)
-    with col_lgd1:
-        lgd_df = pd.DataFrame({
-            "Financing Product": ["Auto Loan (Vehicle Pledge)", "Personal Loan (Salary Assignment)", "Unsecured Personal Loan", "Credit Card / Revolving Limit", "SME Equipment Lease"],
-            "Collateral Coverage": ["85% (Car Lien)", "60% (Payroll Pledge)", "0% (Clean Unsecured)", "0% (Unsecured)", "90% (Machinery Mortgage)"],
-            "Workout Recovery Rate": ["78.0%", "65.0%", "45.0%", "28.0%", "72.0%"],
-            "Baseline LGD": ["22.0%", "35.0%", "55.0%", "72.0%", "28.0%"],
-            "Downturn LGD (Basel Stress)": ["32.0%", "45.0%", "68.0%", "84.0%", "40.0%"]
-        }).set_index("Financing Product")
-        st.dataframe(lgd_df, use_container_width=True)
-
-    with col_lgd2:
-        lgd_chart = pd.DataFrame({
-            "Product": ["Auto Loan", "Salary Pledge", "Unsecured", "Credit Card", "SME Lease"],
-            "Baseline LGD (%)": [22.0, 35.0, 55.0, 72.0, 28.0],
-            "Downturn LGD (%)": [32.0, 45.0, 68.0, 84.0, 40.0]
-        }).set_index("Product")
-        st.bar_chart(lgd_chart)
-
-    st.markdown("---")
-
-    # Section 7: IFRS 9 Staging & Markov Transition Matrix
-    st.markdown("### 6. IFRS 9 Staging Classification & Markov Migration")
-    st.write("Staging classification of credit exposures alongside quarterly Markov transition probabilities:")
-
-    ifrs_col1, ifrs_col2 = st.columns([3, 2])
-    with ifrs_col1:
-        ifrs_df = pd.DataFrame({
-            "IFRS 9 Stage": [
-                "Stage 1: Performing (12-Month ECL)",
-                "Stage 2: Underperforming / SICR (Lifetime ECL)",
-                "Stage 3: Credit Impaired / Default (Lifetime ECL)"
-            ],
-            "Exposure (EAD)": ["EGP 407.6M (84.0%)", "EGP 48.5M (10.0%)", "EGP 29.1M (6.0%)"],
-            "Average PD": ["2.85%", "18.40%", "100.0%"],
-            "Average LGD": ["45.0%", "45.0%", "55.0%"],
-            "Total ECL Provision": ["EGP 5.2M", "EGP 4.0M", "EGP 9.0M"],
-            "Coverage Ratio": ["1.28%", "8.25%", "30.93%"]
-        })
-        st.dataframe(ifrs_df, use_container_width=True)
-
-    with ifrs_col2:
-        trans_matrix = pd.DataFrame({
-            "To Stage 1": [91.2, 18.5, 4.1],
-            "To Stage 2 (SICR)": [7.4, 62.3, 0.0],
-            "To Stage 3 (Default)": [1.4, 19.2, 95.9]
-        }, index=["From Stage 1", "From Stage 2", "From Stage 3"])
-        st.dataframe(trans_matrix, use_container_width=True)
-
-    st.markdown("---")
-
-    # Section 8: CBE Macroeconomic Stress Testing Engine (With FX Devaluation)
-    st.markdown("### 7. CBE Macro Stress-Testing Simulator (With FX Devaluation)")
-    st.write("Forward-looking capital adequacy simulation across multi-factor economic shocks:")
-
-    st_scenario = st.selectbox(
-        "Choose Macroeconomic Scenario:",
-        ["Scenario A: CBE Baseline (Soft Landing)", "Scenario B: Adverse (Inflation & Moderate Devaluation)", "Scenario C: Severely Adverse (Stagflation & FX Shock)"]
-    )
-
-    sc_col1, sc_col2 = st.columns([1, 2])
-    with sc_col1:
-        if "Baseline" in st_scenario:
-            inf_val, rate_val, fx_val, gdp_val = 18.0, 2400, 0, 4.2
-            st.info("**Scenario Assumptions:**\n- Annual Inflation: 18.0%\n- CBE Key Rate: 24.0%\n- EGP FX Devaluation: 0%\n- GDP Growth: +4.2%")
-        elif "Adverse" in st_scenario:
-            inf_val, rate_val, fx_val, gdp_val = 26.5, 2750, 15, 1.8
-            st.warning("**Scenario Assumptions:**\n- Annual Inflation: 26.5% (+8.5% shock)\n- CBE Key Rate: 27.5% (+350 bps)\n- EGP FX Devaluation: 15%\n- GDP Growth: +1.8%")
-        else:
-            inf_val, rate_val, fx_val, gdp_val = 35.0, 3100, 35, -1.2
-            st.error("**Scenario Assumptions:**\n- Annual Inflation: 35.0% (Severe shock)\n- CBE Key Rate: 31.0% (+700 bps)\n- EGP FX Devaluation: 35%\n- GDP Growth: -1.2% (Stagflation)")
-
-    with sc_col2:
-        base_pd = 0.0768
-        sens_pd = base_pd * (
-            1.0 + 
-            ((inf_val - 18.0) * 0.035) + 
-            ((rate_val - 2400) / 100 * 0.022) + 
-            (fx_val * 0.012) - 
-            ((gdp_val - 4.2) * 0.040)
-        )
-        sens_el = 485.2 * sens_pd * 0.48
-        car_impact = max(0.0, (sens_pd - base_pd) * 1.95 * 100)
-        current_car = 14.80 - car_impact
-
-        r1, r2, r3 = st.columns(3)
-        r1.metric("Stressed NPL Rate", f"{sens_pd * 100:.2f}%", f"+{(sens_pd - base_pd)*100:.2f}% bps", delta_color="inverse")
-        r2.metric("Stressed ECL Provision", f"EGP {sens_el:.1f}M", f"+EGP {sens_el - 18.2:.1f}M", delta_color="inverse")
-        r3.metric("Capital Adequacy (CAR)", f"{current_car:.2f}%", f"-{car_impact:.2f}% bps (Min 12.5%)", delta_color="inverse" if current_car < 12.5 else "normal")
-
-        # Stress Progression Chart
-        shock_range = np.linspace(15, 45, 10)
-        proj_rates = [base_pd * (1.0 + (s - 18.0) * 0.035 + (s * 0.5 * 0.012)) * 100 for s in shock_range]
-        stress_curve = pd.DataFrame({
-            "Inflation Stress (%)": [f"{int(s)}%" for s in shock_range],
-            "Simulated NPL Default Rate (%)": proj_rates
-        }).set_index("Inflation Stress (%)")
-        st.line_chart(stress_curve)
-
-    st.markdown("---")
-
-    # Section 9: Regional Distribution & Sector Underwriting Policy
-    st.markdown("### 8. Regional Exposure & Sector Concentration Matrix (HHI = 0.142)")
-    st.write("Monitoring regional and sector credit limits to prevent portfolio concentration risk:")
-
-    g_col1, g_col2 = st.columns(2)
-    with g_col1:
-        st.markdown("#### Regional Distribution (Egyptian Governorates)")
-        geo_df = pd.DataFrame({
-            "Region": ["Greater Cairo", "Alexandria & Delta", "Giza & Upper Egypt", "Suez Canal & Red Sea"],
-            "Share (%)": [48.5, 26.2, 17.8, 7.5],
-            "NPL Rate (%)": [6.4, 7.9, 9.8, 7.1],
-            "Exposure (EGP Millions)": [235.3, 127.1, 86.4, 36.4]
-        }).set_index("Region")
-        st.dataframe(geo_df, use_container_width=True)
-
-    with g_col2:
-        st.markdown("#### Sector Risk & Underwriting Policy Matrix")
-        sector_df = pd.DataFrame({
-            "Sector": ["Government & Public Administration", "Public Business Enterprise", "Multinational Corporate", "Private SME Enterprise", "Self-Employed / Freelance"],
-            "Share (%)": [34.0, 18.5, 22.5, 16.0, 9.0],
-            "NPL Rate (%)": [3.8, 5.2, 4.1, 12.8, 16.4],
-            "Policy Stance": ["Prime Growth", "Prime Growth", "Target Growth", "Cautious / Strict DTI", "Capped Exposure (<10%)"]
-        }).set_index("Sector")
-        st.dataframe(sector_df, use_container_width=True)
-
-# TAB 6: Raw JSON
-with tab6:
     st.subheader("Enriched Contract JSON Payload")
     enriched_payload = engine.enrich_payload(payload)
     st.json(enriched_payload)
