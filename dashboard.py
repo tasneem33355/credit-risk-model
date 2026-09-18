@@ -205,7 +205,14 @@ with tab3:
     st.pyplot(fig)
 
     st.markdown("#### Recent SQLite Entity Audit Records")
-    if graph_data:
+    if isinstance(graph_data, dict):
+        edges = graph_data.get("edges", [])
+        if edges:
+            st.markdown("##### 🔗 Active Cross-Application Collisions (Fraud Ring Links):")
+            st.dataframe(pd.DataFrame(edges), use_container_width=True)
+        else:
+            st.info("ℹ️ No entity collisions or fraud ring links detected in the rolling 48h registry window.")
+    else:
         st.dataframe(pd.DataFrame(graph_data), use_container_width=True)
 
 # -----------------------------------------------------------------------------
