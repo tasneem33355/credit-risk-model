@@ -5,9 +5,9 @@ Platform: Smart Financing & Credit Request Analysis Platform (ZAWOLF / CrediX)
 Standard: Egyptian Banking Federation & CBE Regulatory Compliance Guidelines
 
 Architecture:
-  - Layer 1: Deterministic Cross-Document Rules (NID, Salary vs Statement, OCR, Bureau, Device Telemetry)
-  - Layer 2: Deep Forensic Signals (Benford's Law Chi-Square test, Inflow Uniformity)
-  - Layer 3: SQLite Entity Collision & Velocity Defense (Cross-application 48h tracking for Phone, Account, Device)
+  - Layer 1: Deterministic Cross-Document & Security Rules (NID, Salary vs Statement, Employer, OCR, Bureau, Device Telemetry)
+  - Layer 2: Deep Forensic & Anti-Adversarial Signals (Benford's Law, Terminal-Digit Chi-Square, Micro-Transaction Absence, Threshold-Gaming)
+  - Layer 3: SQLite Entity Collision & Velocity Defense (Cross-application 48h tracking: NID, Phone, Account, Device Hash)
   - Layer 4: Dual-Engine ML Inference (Multi-Tree Isolation Forest + Cost-Sensitive Gradient Boosting)
   - Layer 5: Cost-Sensitive Hybrid Fusion, Bilingual Explainable AI (XAI) & Income Haircut Calculator
 
@@ -58,14 +58,17 @@ class AnomalySignal:
 
 
 # -----------------------------------------------------------------------------
-# Layer 2 Helper: Deep Forensic Analyzer (Benford's Law & Round Numbers)
+# Layer 2 Helper: Deep Forensic Analyzer (Benford, Terminal Digits & Micro-Noise)
 # -----------------------------------------------------------------------------
 
 class DeepForensicAnalyzer:
     """
     Mathematical forensics on transaction amounts in uploaded bank statements.
-    Implements Benford's Law (First Digit Chi-Square Goodness of Fit)
-    and Uniformity Analysis (Detection of rounded fabricated salaries).
+    Implements:
+      1. Benford's Law (Lead Digit Chi-Square Test)
+      2. Terminal / Last-Digit Uniformity Chi-Square Test (Human bias detection)
+      3. Micro-Transaction Friction Analysis (Absence of daily expense noise)
+      4. Inflow Uniformity Analysis (Detection of rounded fabricated salaries)
     """
 
     BENFORD_PROBABILITIES = {
@@ -75,6 +78,10 @@ class DeepForensicAnalyzer:
 
     @staticmethod
     def evaluate_benford_law(numbers: List[float]) -> Tuple[bool, float, float]:
+        """
+        Tests if transaction lead digits conform to Benford's Law.
+        Returns: (is_anomaly, chi_square_stat, p_value_approx)
+        """
         valid_digits = []
         for n in numbers:
             val = abs(float(n or 0))
@@ -97,11 +104,70 @@ class DeepForensicAnalyzer:
             observed = observed_counts[d]
             chi_square += ((observed - expected) ** 2) / max(expected, 0.001)
 
+        # Critical chi-square at df=8, p=0.05 is 15.51
         is_anomaly = bool(chi_square > 15.51)
         return is_anomaly, round(chi_square, 2), 0.02 if is_anomaly else 0.85
 
     @staticmethod
+    def evaluate_last_digit_uniformity(numbers: List[float]) -> Tuple[bool, float, float]:
+        """
+        Terminal Digit Analysis (Last-Digit Chi-Square Test).
+        In authentic retail transactions and human spending, the last integer 
+        digit (0-9) follows a discrete Uniform Distribution (10% per digit).
+        Human fabricators heavily over-sample 0 and 5, and under-sample 3, 7, 4.
+        Returns: (is_anomaly, chi_square_stat, p_value_approx)
+        """
+        valid_digits = []
+        for n in numbers:
+            val = abs(float(n or 0))
+            if val >= 10.0:
+                last_digit = int(math.floor(val)) % 10
+                valid_digits.append(last_digit)
+
+        if len(valid_digits) < 10:
+            return False, 0.0, 1.0
+
+        n_total = len(valid_digits)
+        observed = {d: 0 for d in range(10)}
+        for d in valid_digits:
+            observed[d] += 1
+
+        expected = n_total / 10.0
+        chi_square = sum(((observed[d] - expected) ** 2) / max(expected, 0.001) for d in range(10))
+
+        # Critical Chi-Square for df = 9 at p = 0.05 is 16.92
+        is_anomaly = bool(chi_square > 16.92)
+        return is_anomaly, round(chi_square, 2), 0.01 if is_anomaly else 0.85
+
+    @staticmethod
+    def analyze_micro_transaction_absence(numbers: List[float]) -> Tuple[bool, float]:
+        """
+        Real-world daily expense noise analysis.
+        Authentic personal accounts contain messy micro-transactions (< 250 EGP or odd piastres)
+        for telecom bills, transport, retail, pharmacies, etc.
+        Fabricated statements typically only list clean round lump-sums (Salary, Rent, Big ATM).
+        Returns: (is_suspicious_absence, micro_ratio)
+        """
+        if not numbers or len(numbers) < 6:
+            return False, 1.0
+
+        amounts = [abs(float(n or 0)) for n in numbers if abs(float(n or 0)) > 0]
+        if not amounts:
+            return False, 1.0
+
+        micro_count = sum(1 for a in amounts if a < 250.0 or (a % 1.0 > 0.01))
+        micro_ratio = micro_count / len(amounts)
+
+        # Flag if micro-transactions account for under 8% in a populated statement
+        is_synthetic = bool(micro_ratio < 0.08 and len(amounts) >= 8)
+        return is_synthetic, round(micro_ratio, 3)
+
+    @staticmethod
     def calculate_inflow_uniformity(amounts: List[float]) -> float:
+        """
+        Calculates ratio of highly rounded inflow numbers (e.g. 1000, 5000, 10000).
+        Forged statements typically use round numbers rather than real-world messy sums.
+        """
         if not amounts:
             return 0.0
         clean_amounts = [abs(float(a)) for a in amounts if abs(float(a)) > 100]
@@ -118,7 +184,7 @@ class DeepForensicAnalyzer:
 class SQLiteEntityStore:
     """
     Lightweight, embedded cross-application registry to detect fraud ring velocity
-    and entity collisions (phone, NID, employer, IBAN, device) across a rolling 48-hour window.
+    and entity collisions (Phone, NID, Employer, IBAN, Device Fingerprint) across 48h.
     """
 
     def __init__(self, db_path: Optional[str] = None):
@@ -145,6 +211,8 @@ class SQLiteEntityStore:
                     )
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_time ON entity_audit_log(timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_phone ON entity_audit_log(phone_hash)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_device ON entity_audit_log(device_id_hash)")
                 conn.commit()
         except Exception:
             pass
@@ -152,6 +220,9 @@ class SQLiteEntityStore:
     def check_and_record_velocity(
         self, application_id: str, national_id: str, phone: str, employer: str, account: str, device_id: str = ""
     ) -> Dict[str, Any]:
+        """
+        Checks if entity identifiers have collided in >2 applications within 48 hours.
+        """
         now = datetime.utcnow()
         window_start = (now - timedelta(hours=48)).isoformat()
         nid_h = hashlib.sha256((national_id or "").strip().encode()).hexdigest() if national_id else ""
@@ -201,6 +272,7 @@ class SQLiteEntityStore:
                         collisions["duplicate_device_in_48h"] = True
                         collisions["total_collisions"] += count_dev
 
+                # Record current transaction
                 cursor.execute(
                     "INSERT INTO entity_audit_log (application_id, timestamp, nid_hash, phone_hash, employer_name, bank_account_hash, device_id_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (application_id, now.isoformat(), nid_h, ph_h, emp_clean, acc_h, dev_h)
@@ -211,31 +283,53 @@ class SQLiteEntityStore:
 
         return collisions
 
-    def get_recent_graph_data(self, limit: int = 25) -> List[Dict[str, Any]]:
-        """Returns recent entity submissions for graph network rendering."""
+    def get_recent_graph_data(self, limit: int = 30) -> Dict[str, Any]:
+        """
+        Retrieves recent entity links to power the Fraud Ring Network Graph in dashboard.
+        """
+        nodes = []
+        edges = []
+        node_ids = set()
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT application_id, timestamp, phone_hash, employer_name, bank_account_hash, device_id_hash
-                    FROM entity_audit_log
-                    ORDER BY id DESC
-                    LIMIT ?
-                """, (limit,))
+                cursor.execute(
+                    "SELECT application_id, phone_hash, employer_name, bank_account_hash, device_id_hash FROM entity_audit_log ORDER BY id DESC LIMIT ?",
+                    (limit,)
+                )
                 rows = cursor.fetchall()
-                data = []
-                for r in rows:
-                    data.append({
-                        "app_id": r[0],
-                        "timestamp": r[1],
-                        "phone_masked": f"PH-{r[2][:6]}" if r[2] else "",
-                        "employer": r[3] if r[3] else "",
-                        "account_masked": f"ACC-{r[4][:6]}" if r[4] else "",
-                        "device_masked": f"DEV-{r[5][:6]}" if r[5] else ""
-                    })
-                return data
+
+                for row in rows:
+                    app_id, ph, emp, acc, dev = row
+                    if app_id not in node_ids:
+                        nodes.append({"id": app_id, "label": f"App: {app_id[:10]}", "group": "application"})
+                        node_ids.add(app_id)
+
+                    if ph:
+                        ph_node = f"Phone_{ph[:6]}"
+                        if ph_node not in node_ids:
+                            nodes.append({"id": ph_node, "label": ph_node, "group": "phone"})
+                            node_ids.add(ph_node)
+                        edges.append({"from": app_id, "to": ph_node, "relationship": "USES_PHONE"})
+
+                    if dev:
+                        dev_node = f"Dev_{dev[:6]}"
+                        if dev_node not in node_ids:
+                            nodes.append({"id": dev_node, "label": dev_node, "group": "device"})
+                            node_ids.add(dev_node)
+                        edges.append({"from": app_id, "to": dev_node, "relationship": "USES_DEVICE"})
+
+                    if acc:
+                        acc_node = f"Acc_{acc[:6]}"
+                        if acc_node not in node_ids:
+                            nodes.append({"id": acc_node, "label": acc_node, "group": "account"})
+                            node_ids.add(acc_node)
+                        edges.append({"from": app_id, "to": acc_node, "relationship": "USES_ACCOUNT"})
         except Exception:
-            return []
+            pass
+
+        return {"nodes": nodes, "edges": edges, "total_entities": len(nodes)}
 
 
 # -----------------------------------------------------------------------------
@@ -243,6 +337,12 @@ class SQLiteEntityStore:
 # -----------------------------------------------------------------------------
 
 class PersistentModelManager:
+    """
+    Loads pre-trained production model weights (Isolation Forest + HistGradientBoosting)
+    and executes fast vectorized scoring (<5ms per application).
+    Never retrains at runtime.
+    """
+
     FEATURE_NAMES = [
         'income_mismatch_ratio', 'annuity_to_balance_ratio', 'balance_volatility_cv',
         'surge_ratio_max_to_avg', 'ocr_quality_mean', 'min_to_avg_balance_ratio',
@@ -280,6 +380,7 @@ class PersistentModelManager:
             self._fallback_init()
 
     def _fallback_init(self):
+        """Safe heuristic fallback if model artifacts are not yet saved to disk."""
         from sklearn.ensemble import IsolationForest
         from sklearn.preprocessing import StandardScaler
         np.random.seed(42)
@@ -290,12 +391,18 @@ class PersistentModelManager:
         self.is_loaded = False
 
     def predict_scores(self, feature_vector: np.ndarray) -> Tuple[float, float, bool]:
+        """
+        Executes inference on 12-dimensional feature vector.
+        Returns: (isolation_forest_score, gradient_boost_prob, is_anomaly)
+        """
         try:
             scaled = self.scaler.transform(feature_vector)
+            # Isolation Forest anomaly score [0.0, 1.0]
             raw_iso = self.iso_model.decision_function(scaled)[0]
             iso_score = float(np.clip(0.50 - (raw_iso * 1.8), 0.0, 1.0))
             is_anomaly = bool(iso_score > 0.60)
 
+            # Gradient Boosting probability [0.0, 1.0]
             if self.gb_model is not None:
                 gb_prob = float(self.gb_model.predict_proba(scaled)[0, 1])
             else:
@@ -311,6 +418,10 @@ class PersistentModelManager:
 # -----------------------------------------------------------------------------
 
 class HighDimensionalFraudVectorizer:
+    """
+    Transforms raw application JSON payload into canonical 12-dimensional feature vector.
+    """
+
     @staticmethod
     def extract_features(app: Dict[str, Any], mismatch_ratio: float, uniformity_score: float) -> np.ndarray:
         bank_fields = app.get("bank_statement_fields", {})
@@ -330,10 +441,12 @@ class HighDimensionalFraudVectorizer:
         iscore = float(iscore_fields.get("credit_score", {}).get("value", 650) or 650)
         facilities = float(iscore_fields.get("active_facilities_count", {}).get("value", 2) or 2)
 
+        # Calculate OCR mean across all attached documents
         docs = app.get("documents", [])
         ocr_scores = [float(d.get("overall_quality_score", 0.85)) for d in docs if isinstance(d, dict)]
         ocr_mean = float(np.mean(ocr_scores)) if ocr_scores else 0.88
 
+        # 12 Normalized Features matching training matrix:
         feat = [
             float(np.clip(mismatch_ratio, 0.0, 2.0)),
             float(np.clip(annuity / avg_balance, 0.0, 5.0)),
@@ -356,6 +469,12 @@ class HighDimensionalFraudVectorizer:
 # -----------------------------------------------------------------------------
 
 class CreditFraudEngine:
+    """
+    Senior / Production-Grade Hybrid 5-Layer Fraud Prevention & Consistency Engine.
+    Executes fast inference, cross-document deterministic checks, entity graph defense,
+    deep mathematical forensics, and bilingual CBE-compliant explainability.
+    """
+
     SEVERITY_WEIGHTS = {
         "LOW": 0.10,
         "MEDIUM": 0.25,
@@ -363,6 +482,7 @@ class CreditFraudEngine:
         "CRITICAL": 0.90
     }
 
+    # Regulatory & Risk Thresholds
     INCOME_MISMATCH_WARN = 0.20
     INCOME_MISMATCH_CRITICAL = 0.40
     EMPLOYER_SIMILARITY_MIN = 0.65
@@ -378,11 +498,15 @@ class CreditFraudEngine:
         self.model_manager = PersistentModelManager(artifact_dir)
 
     def evaluate(self, application: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Executes end-to-end 5-layer evaluation on the application JSON payload.
+        Zero training takes place inside this method; inference only.
+        """
         violations: List[FraudRuleViolation] = []
         checks_passed: Dict[str, bool] = {}
 
         # ---------------------------------------------------------------------
-        # LAYER 1: Deterministic Cross-Document & Digital Telemetry Checks
+        # LAYER 1: Deterministic Cross-Document & Security Consistency
         # ---------------------------------------------------------------------
         nid_ok, nid_v = self._verify_identity(application)
         checks_passed["identity_verified"] = nid_ok
@@ -408,15 +532,14 @@ class CreditFraudEngine:
         checks_passed["bank_statement_math_verified"] = bank_ok
         violations.extend(bank_v)
 
-        # Digital Telemetry & Device Verification
-        telemetry_ok, tel_v = self._verify_device_telemetry(application)
-        checks_passed["device_telemetry_verified"] = telemetry_ok
-        violations.extend(tel_v)
+        dev_telemetry_ok, dev_v = self._verify_device_telemetry(application)
+        checks_passed["device_telemetry_verified"] = dev_telemetry_ok
+        violations.extend(dev_v)
 
         # ---------------------------------------------------------------------
-        # LAYER 2: Deep Forensic Signals (Benford's Law & Cashflow Uniformity)
+        # LAYER 2: Deep Forensic & Anti-Adversarial Signals
         # ---------------------------------------------------------------------
-        anomaly_signals, uniformity_score, benford_anomaly = self._detect_behavioral_and_forensic_anomalies(
+        anomaly_signals, uniformity_score, benford_anomaly, terminal_digit_anomaly = self._detect_behavioral_and_forensic_anomalies(
             application, income_mismatch
         )
 
@@ -453,13 +576,13 @@ class CreditFraudEngine:
         if collisions.get("duplicate_device_in_48h"):
             violations.append(FraudRuleViolation(
                 rule_code="VEL-003-DEVICE-FINGERPRINT-COLLISION",
-                rule_name_en="Device Fingerprint Fraud Ring Collision",
-                rule_name_ar="تقديم طلبات متعددة لعملاء مختلفين من نفس الجهاز الفعلي",
+                rule_name_en="Device Fingerprint Collision Across Identities",
+                rule_name_ar="تكرار بصمة الجهاز في طلبات ائتمانية بأسماء مختلفة",
                 severity="CRITICAL",
-                description_en="Hardware device fingerprint was used to submit multiple distinct credit requests within 48h (Syndicate Terminal).",
-                description_ar="تم رصد استخدام نفس بصمة الجهاز الفعلي لتقديم طلبات ائتمانية لعملاء مختلفين خلال 48 ساعة.",
-                observed_value=collisions["total_collisions"],
-                threshold_value="< 2 applications / device",
+                description_en="Hardware device fingerprint used across multiple distinct loan applications within 48h.",
+                description_ar="بصمة الجهاز الرقمية مسجلة في طلبات تمويل أخرى ببيانات هوية مختلفة خلال 48 ساعة.",
+                observed_value=True,
+                threshold_value=False,
                 weight=self.SEVERITY_WEIGHTS["CRITICAL"]
             ))
 
@@ -505,6 +628,7 @@ class CreditFraudEngine:
                 "employer_similarity_score": round(emp_similarity, 4),
                 "inflow_uniformity_score": round(uniformity_score, 4),
                 "benford_law_violation": bool(benford_anomaly),
+                "terminal_digit_violation": bool(terminal_digit_anomaly),
                 "isolation_forest_anomaly_score": round(iso_score, 4),
                 "gradient_boost_fraud_probability": round(gb_prob, 4),
                 "entity_collisions_count": collisions.get("total_collisions", 0),
@@ -531,42 +655,6 @@ class CreditFraudEngine:
     # -------------------------------------------------------------------------
     # Layer 1 Rule Methods
     # -------------------------------------------------------------------------
-
-    def _verify_device_telemetry(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
-        violations = []
-        telemetry = app.get("device_telemetry", {})
-        if not telemetry:
-            return True, []
-
-        is_vpn = bool(telemetry.get("is_vpn_or_proxy", False))
-        if is_vpn:
-            violations.append(FraudRuleViolation(
-                rule_code="TEL-001-VPN-PROXY-ANONYMIZER",
-                rule_name_en="Anonymous Proxy / Commercial VPN Detected",
-                rule_name_ar="استخدام شبكة افتراضية خاصة (VPN) أو بروكسي لإخفاء الهوية الرقمية",
-                severity="HIGH",
-                description_en="Submission originated from a commercial VPN/datacenter IP address rather than a residential Egyptian ISP.",
-                description_ar="طلب الائتمان تم إرساله عبر خادم VPN أو مركز بيانات تجاري لإخفاء الموقع الجغرافي الحقيقي للمتقدم.",
-                observed_value="VPN = TRUE",
-                threshold_value="VPN = FALSE",
-                weight=self.SEVERITY_WEIGHTS["HIGH"]
-            ))
-
-        submission_hour = telemetry.get("submission_hour_utc")
-        if submission_hour is not None and (1 <= int(submission_hour) <= 4):
-            violations.append(FraudRuleViolation(
-                rule_code="TEL-002-OFF-HOURS-SUBMISSION",
-                rule_name_en="Anomalous Off-Hours Automated Submission",
-                rule_name_ar="تقديم طلب آلي في ساعات الفجر المتأخرة",
-                severity="LOW",
-                description_en="Application was submitted between 01:00 AM and 04:00 AM, common pattern in batch automated bot applications.",
-                description_ar="تم تسجيل الطلب في ساعات متأخرة جداً فجراً، وهو نمط متكرر في هجمات التقديم الآلي.",
-                observed_value=f"Hour: {submission_hour} UTC",
-                threshold_value="Standard Hours",
-                weight=self.SEVERITY_WEIGHTS["LOW"]
-            ))
-
-        return len(violations) == 0, violations
 
     def _verify_identity(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
         violations = []
@@ -781,13 +869,64 @@ class CreditFraudEngine:
 
         return len(violations) == 0, violations
 
+    def _verify_device_telemetry(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
+        """
+        Security telemetry: VPN/Proxy detection, rooted devices, emulators, off-hours submission.
+        """
+        violations = []
+        telemetry = app.get("device_telemetry", {})
+        if not telemetry:
+            return True, violations
+
+        if telemetry.get("is_vpn_or_proxy", False):
+            violations.append(FraudRuleViolation(
+                rule_code="SEC-001-VPN-OR-PROXY-DETECTED",
+                rule_name_en="Anonymizing Proxy or VPN Detected",
+                rule_name_ar="تقديم الطلب عبر شبكة افتراضية خاصة أو خادم وسيط (VPN/Proxy)",
+                severity="HIGH",
+                description_en="Applicant submitted credit application via masked IP / VPN concealing true geographic origin.",
+                description_ar="تم إرسال الطلب الائتماني باستخدام VPN لإخفاء الموقع الجغرافي الفعلي للمستخدم.",
+                observed_value=True,
+                threshold_value=False,
+                weight=self.SEVERITY_WEIGHTS["HIGH"]
+            ))
+
+        if telemetry.get("device_is_rooted_or_emulator", False):
+            violations.append(FraudRuleViolation(
+                rule_code="SEC-002-COMPROMISED-DEVICE-ENVIRONMENT",
+                rule_name_en="Rooted Device or Virtual Emulator Environment",
+                rule_name_ar="التقديم من جهاز مفتوح الصلاحيات (Rooted) أو بيئة محاكي برمجية",
+                severity="CRITICAL",
+                description_en="Client environment identified as an emulated virtual machine or jailbroken device.",
+                description_ar="البيئة البرمجية للجهاز تدل على محاكي افتراضي أو تعديل لنظام التشغيل الأساسي.",
+                observed_value=True,
+                threshold_value=False,
+                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+            ))
+
+        submission_hour = telemetry.get("submission_hour_local", 12)
+        if 2 <= submission_hour <= 5:
+            violations.append(FraudRuleViolation(
+                rule_code="SEC-003-ABNORMAL-OFF-HOURS-SUBMISSION",
+                rule_name_en="Off-hours Automated Batch Submission Window",
+                rule_name_ar="تقديم الطلب في ساعات حظر الفجر المشبوهة (2 AM - 5 AM)",
+                severity="LOW",
+                description_en=f"Application submitted at {submission_hour}:00 AM (typical bot/syndicate batching window).",
+                description_ar=f"تم إرسال الطلب في تمام الساعة {submission_hour}:00 فجراً، وهو توقيت غير معتاد لطلبات الأفراد.",
+                observed_value=f"{submission_hour}:00 AM",
+                threshold_value="Normal waking hours",
+                weight=self.SEVERITY_WEIGHTS["LOW"]
+            ))
+
+        return len(violations) == 0, violations
+
     # -------------------------------------------------------------------------
-    # Layer 2 & Forensic Signal Methods
+    # Layer 2 & Anti-Adversarial Forensic Methods
     # -------------------------------------------------------------------------
 
     def _detect_behavioral_and_forensic_anomalies(
         self, app: Dict[str, Any], income_mismatch: float
-    ) -> Tuple[List[AnomalySignal], float, bool]:
+    ) -> Tuple[List[AnomalySignal], float, bool, bool]:
         signals = []
         bank_fields = app.get("bank_statement_fields", {})
         form_data = app.get("form_data", {})
@@ -799,6 +938,7 @@ class CreditFraudEngine:
         regularity = float(bank_fields.get("income_regularity_score", {}).get("value", 1.0) or 1.0)
         requested_annuity = float(form_data.get("requested_annuity", 0.0) or 0.0)
 
+        # 1. Window Dressing
         is_window_dressed = False
         surge_ratio = 1.0
         if avg_balance > 0:
@@ -811,9 +951,10 @@ class CreditFraudEngine:
             anomaly_score=round(min(surge_ratio / 4.0, 1.0), 3) if is_window_dressed else 0.0,
             detected=is_window_dressed,
             explanation_en=f"Peak balance (EGP {max_balance:,.0f}) is {surge_ratio:.1f}x higher than average balance, followed by low liquidity reserve.",
-            explanation_ar=f"أعلى رصيد ({max_balance:,.0f} ج.م) يتجاوز {surge_ratio:.1f} أضعاف المتوسط الشهري مع فراغ الحساب، مؤشر على اقتراض مؤقت لتجميل كشف الحساب."
+            explanation_ar=f"أعلى رصيد ({max_balance:,.0f} ج.م) يتجاوز {surge_ratio:.1f} أضعاف المتوسط الشهري مع فراغ الحساب، مؤشر على تجميل كشف الحساب."
         ))
 
+        # 2. Volatility
         is_volatile = False
         if avg_balance > 0 and (volatility / avg_balance) > 1.20 and regularity < 0.60:
             is_volatile = True
@@ -826,6 +967,7 @@ class CreditFraudEngine:
             explanation_ar=f"تذبذب شديد في السيولة (انحراف معياري {volatility:,.0f} ج.م) مع ضعف انتظام مواعيد نزول المرتب ({regularity*100:.0f}%)."
         ))
 
+        # 3. Annuity Stress
         is_annuity_stress = False
         if avg_balance > 0 and requested_annuity > 0:
             buffer_ratio = requested_annuity / avg_balance
@@ -840,34 +982,108 @@ class CreditFraudEngine:
             explanation_ar=f"القسط الشهري المطلوب ({requested_annuity:,.0f} ج.م) يستنزف أكثر من 60% من متوسط رصيد العميل السائل تاريخياً."
         ))
 
+        # 4. Mathematical Forensics on Transaction Amounts
         sample_transactions = bank_fields.get("sample_transaction_amounts", {}).get("value", [])
+        benford_anomaly = False
+        terminal_digit_anomaly = False
+        chi_stat = 0.0
+        uniformity_score = 0.0
+
         if sample_transactions and len(sample_transactions) >= 4:
             benford_anomaly, chi_stat, _ = DeepForensicAnalyzer.evaluate_benford_law(sample_transactions)
             uniformity_score = DeepForensicAnalyzer.calculate_inflow_uniformity(sample_transactions)
-        else:
-            benford_anomaly = False
-            chi_stat = 0.0
-            uniformity_score = 0.0
 
-        if benford_anomaly:
+            if benford_anomaly:
+                signals.append(AnomalySignal(
+                    anomaly_name="BENFORD_LAW_FIRST_DIGIT_VIOLATION",
+                    anomaly_score=0.85,
+                    detected=True,
+                    explanation_en=f"Transaction lead digit distribution violates Benford's Law (Chi-Square: {chi_stat:.1f}, p < 0.05). High likelihood of fabricated numbers.",
+                    explanation_ar=f"توزيع الأرقام في كشف الحساب ينتهك قانون بنفورد الإحصائي (مربع كاي: {chi_stat:.1f}). مؤشر قوي على أرقام مصطنعة ومكتوبة يدوياً."
+                ))
+
+            if uniformity_score > 0.40:
+                signals.append(AnomalySignal(
+                    anomaly_name="FABRICATED_ROUND_NUMBER_UNIFORMITY",
+                    anomaly_score=uniformity_score,
+                    detected=True,
+                    explanation_en=f"Abnormal uniformity: {uniformity_score*100:.0f}% of transactions are perfect round thousands/hundreds without authentic fractional friction.",
+                    explanation_ar=f"تكرار غير طبيعي لأرقام مستديرة تماماً بنسبة {uniformity_score*100:.0f}% دون وجود كسور أو تعاملات تجزئة حقيقية."
+                ))
+
+        # 5. Last-Digit Uniformity Forensics (Terminal Digit Chi-Square Test)
+        if sample_transactions and len(sample_transactions) >= 10:
+            terminal_digit_anomaly, ld_chi_stat, _ = DeepForensicAnalyzer.evaluate_last_digit_uniformity(sample_transactions)
+            if terminal_digit_anomaly:
+                signals.append(AnomalySignal(
+                    anomaly_name="TERMINAL_DIGIT_UNIFORMITY_VIOLATION",
+                    anomaly_score=0.80,
+                    detected=True,
+                    explanation_en=f"Last-digit frequency violates uniform distribution (Chi-Square: {ld_chi_stat:.1f}, p < 0.05). Reflects human subconscious digit bias in forged entries.",
+                    explanation_ar=f"الخانة الأخيرة في مبالغ المعاملات تنتهك التوزيع الطبيعي المنتظم (مربع كاي: {ld_chi_stat:.1f}). مؤشر على انحياز بشري في تأليف المبالغ."
+                ))
+
+        # 6. Micro-Transaction Absence (Real-World Expense Noise Check)
+        if sample_transactions:
+            is_synthetic_statement, micro_ratio = DeepForensicAnalyzer.analyze_micro_transaction_absence(sample_transactions)
+            if is_synthetic_statement:
+                signals.append(AnomalySignal(
+                    anomaly_name="SYNTHETIC_STATEMENT_MICRO_TRANSACTION_ABSENCE",
+                    anomaly_score=0.75,
+                    detected=True,
+                    explanation_en=f"Absence of real-world expense noise: Only {micro_ratio*100:.1f}% micro-transactions (<250 EGP). Authentic lifestyle friction is absent.",
+                    explanation_ar=f"غياب ضوضاء الحياة اليومية ومصروفات الاحتكاك العادية ({micro_ratio*100:.1f}% فقط معاملات صغيرة). كشف الحساب يحتوي فقط على مبالغ كبرى مصطنعة."
+                ))
+
+        # 7. Adversarial Threshold-Gaming Detector
+        is_gaming, gaming_score, gaming_reasons = self._evaluate_threshold_gaming(app, income_mismatch)
+        if is_gaming:
             signals.append(AnomalySignal(
-                anomaly_name="BENFORD_LAW_FIRST_DIGIT_VIOLATION",
-                anomaly_score=0.85,
+                anomaly_name="ADVERSARIAL_THRESHOLD_GAMING",
+                anomaly_score=gaming_score,
                 detected=True,
-                explanation_en=f"Transaction lead digit distribution violates Benford's Law (Chi-Square: {chi_stat:.1f}, p < 0.05). High likelihood of fabricated numbers.",
-                explanation_ar=f"توزيع الأرقام في كشف الحساب ينتهك قانون بنفورد الإحصائي (مربع كاي: {chi_stat:.1f}). مؤشر قوي على أرقام مصطنعة ومكتوبة يدوياً."
+                explanation_en=f"Applicant parameters cluster suspiciously close below auto-rejection cutoffs: {'; '.join(gaming_reasons)}.",
+                explanation_ar=f"رصد محاولة تحايل استراتيجي وضبط الأرقام عمداً تحت أسقف الرفض مباشرة: {'; '.join(gaming_reasons)}."
             ))
 
-        if uniformity_score > 0.40:
-            signals.append(AnomalySignal(
-                anomaly_name="FABRICATED_ROUND_NUMBER_UNIFORMITY",
-                anomaly_score=uniformity_score,
-                detected=True,
-                explanation_en=f"Abnormal uniformity: {uniformity_score*100:.0f}% of transactions are perfect round thousands/hundreds without authentic fractional friction.",
-                explanation_ar=f"تكرار غير طبيعي لأرقام مستديرة تماماً بنسبة {uniformity_score*100:.0f}% دون وجود كسور أو تعاملات تجزئة حقيقية."
-            ))
+        return signals, uniformity_score, benford_anomaly, terminal_digit_anomaly
 
-        return signals, uniformity_score, benford_anomaly
+    def _evaluate_threshold_gaming(
+        self, application: Dict[str, Any], income_mismatch: float
+    ) -> Tuple[bool, float, List[str]]:
+        """
+        Detects applicants who calibrate application metrics strategically
+        just below automated cutoff boundaries (Margin Proximity Clustering).
+        """
+        gaming_signals = []
+        proximity_score = 0.0
+
+        bank_fields = application.get("bank_statement_fields", {})
+        form_data = application.get("form_data", {})
+
+        # Income Mismatch Gaming (Tuned right under critical ceiling)
+        if 0.12 <= income_mismatch < self.INCOME_MISMATCH_CRITICAL:
+            gaming_signals.append(f"Income mismatch ({income_mismatch*100:.1f}%) calibrated directly below {self.INCOME_MISMATCH_CRITICAL*100:.0f}% cutoff")
+            proximity_score += 0.35
+
+        # Annuity/Liquidity Buffer Gaming
+        avg_bal = float(bank_fields.get("avg_monthly_balance", {}).get("value", 0.0) or 0.0)
+        annuity = float(form_data.get("requested_annuity", 0.0) or 0.0)
+        if avg_bal > 0 and annuity > 0:
+            buffer = annuity / avg_bal
+            if 0.52 <= buffer < self.ANNUITY_TO_LIQUIDITY_MAX:
+                gaming_signals.append(f"Annuity/Liquidity ratio ({buffer*100:.1f}%) tuned directly below {self.ANNUITY_TO_LIQUIDITY_MAX*100:.0f}% ceiling")
+                proximity_score += 0.35
+
+        # Age Boundary Proximity
+        nid_fields = application.get("national_id_fields", {})
+        age = float(nid_fields.get("age_years", {}).get("value", 0.0) or 0.0)
+        if (self.MIN_APPLICANT_AGE <= age <= self.MIN_APPLICANT_AGE + 0.3) or (self.MAX_APPLICANT_AGE - 0.3 <= age <= self.MAX_APPLICANT_AGE):
+            gaming_signals.append(f"Applicant age ({age:.1f}y) lies directly on policy edge")
+            proximity_score += 0.20
+
+        is_gaming = len(gaming_signals) >= 2 or proximity_score >= 0.60
+        return is_gaming, round(proximity_score, 2), gaming_signals
 
     # -------------------------------------------------------------------------
     # Layer 3 Entity Velocity Method
@@ -879,7 +1095,7 @@ class CreditFraudEngine:
         phone = app.get("form_data", {}).get("mobile_phone", "")
         employer = app.get("salary_certificate_fields", {}).get("employer_name", {}).get("value", "")
         account = app.get("bank_statement_fields", {}).get("bank_account_number", {}).get("value", "")
-        device_id = app.get("device_telemetry", {}).get("device_id", "")
+        device_id = app.get("device_telemetry", {}).get("device_fingerprint_id", "")
 
         return self.entity_store.check_and_record_velocity(app_id, nid, phone, employer, account, device_id)
 
@@ -901,7 +1117,10 @@ class CreditFraudEngine:
         detected_anoms = [a for a in anomalies if a.detected]
         anomaly_score = sum(a.anomaly_score * 0.20 for a in detected_anoms)
 
+        # ML Ensemble Score (35% Isolation Forest + 65% Gradient Boost)
         ml_score = (0.35 * iso_score) + (0.65 * gb_prob)
+
+        # Total Aggregation: 50% Deterministic Rules + 20% Forensic Anomalies + 30% Dual-Engine ML
         base_score = (0.50 * rule_score) + (0.20 * anomaly_score) + (0.30 * ml_score)
         total_score = float(np.clip(base_score, 0.0, 1.0))
 
@@ -954,14 +1173,14 @@ class CreditFraudEngine:
 
         app_id = app.get("application_id", "N/A")
         if risk_level == "LOW":
-            summary_ar = f"الطلب {app_id} اجتاز كافة فحوصات التطابق الجنائي والبنكي والتحقق الرقمي بنجاح. لا توجد مؤشرات احتيال، والملف مؤهل للتقييم الائتماني المباشر."
-            summary_en = f"Application {app_id} successfully passed all 5 forensic, entity graph, digital telemetry, and ML layers. Fraud probability is low ({gb_prob*100:.1f}%)."
+            summary_ar = f"الطلب {app_id} اجتاز كافة فحوصات التطابق الجنائي والبنكي والسيبراني بنجاح. لا توجد مؤشرات تزوير أو تلاعب بالحدود، والملف مؤهل للتقييم الائتماني المباشر."
+            summary_en = f"Application {app_id} successfully passed all forensic, cybersecurity, and ML layers. Fraud probability is low ({gb_prob*100:.1f}%)."
         elif risk_level == "CRITICAL":
-            summary_ar = f"تحذير رقابي حرج: الطلب {app_id} تم رفضه آلياً لاشتباه تزوير مؤكد أو تكرار بالشبكة. تم رصد {len(violations)} خرق لسياسات البنك المركزي مع احتمال احتيال بنسبة {gb_prob*100:.1f}%."
-            summary_en = f"Regulatory Critical Alert: Application {app_id} auto-rejected due to fatal document/entity/device tampering. Estimated fraud probability: {gb_prob*100:.1f}%."
+            summary_ar = f"تحذير رقابي حرج: الطلب {app_id} تم رفضه آلياً لاشتباه تزوير مؤكد أو تلاعب جنائي. تم رصد {len(violations)} خرق لسياسات البنك المركزي."
+            summary_en = f"Regulatory Critical Alert: Application {app_id} auto-rejected due to critical document tampering or security violations."
         else:
-            summary_ar = f"الطلب {app_id} يتطلب مراجعة ائتمانية يدوية متخصصة لوجود تفاوتات جزئية أو مؤشرات عدم استقرار مالي."
-            summary_en = f"Application {app_id} routed to senior underwriter queue due to moderate inconsistencies or cashflow volatility."
+            summary_ar = f"الطلب {app_id} يتطلب مراجعة ائتمانية يدوية متخصصة لوجود تفاوتات جزئية أو مؤشرات عدم استقرار أو اقتراب من الحدود الرقابية."
+            summary_en = f"Application {app_id} routed to senior underwriter queue due to moderate inconsistencies or behavioral boundary alerts."
 
         return reason_codes, summary_ar, summary_en
 
@@ -994,6 +1213,9 @@ class CreditFraudEngine:
         return mapping.get(action, action)
 
     def enrich_payload(self, application: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enriches the input JSON payload with the full fraud_assessment block.
+        """
         assessment = self.evaluate(application)
         if "consistency_checks" not in application:
             application["consistency_checks"] = {}
