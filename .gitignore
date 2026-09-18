@@ -1,13 +1,17 @@
 # Trained model artifacts (large binary files, regenerate via model/train.py)
 model/artifacts/*.pkl
 model/artifacts/*.joblib
+!model/artifacts/fraud/
+!model/artifacts/fraud/*
 
 # Environment / secrets
 .env
+fraud_registry.db
 
-# Raw data - never commit source data
-data/
+# Raw data - never commit source data (except calibrated synthetic fraud dataset)
+data/*
 *.csv
+!data/fraud_training_data_25000.csv
 
 # Python
 __pycache__/

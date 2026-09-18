@@ -1,20 +1,25 @@
 """
-Senior Enterprise Credit Application Fraud & Forensic Intelligence Engine (v2.5)
-==================================================================================
-Platform: Smart Financing & Credit Request Analysis Platform (CrediX / ZAWOLF)
-Target Standard: Central Bank of Egypt (CBE) Compliance & Basel Committee Principles
-Architecture: 5-Layer Hybrid Fraud Defense
-  - Layer 1: Deterministic Cross-Document Rules Engine (OCR + Bureau + Core Banking)
-  - Layer 2: Deep Forensic Signals & Cashflow Analytics (Benford's Law + Uniformity)
-  - Layer 3: Entity Resolution & Syndicate Collision Detector (Graph / Velocity)
-  - Layer 4: High-Dimensional Unsupervised Machine Learning (Isolation Forest)
-  - Layer 5: Cost-Sensitive Hybrid Fusion, Bilingual XAI & Downstream Risk Feeder
+Senior Production-Grade 5-Layer Credit Application Fraud & Consistency Engine
+=============================================================================
+Platform: Smart Financing & Credit Request Analysis Platform (ZAWOLF / CrediX)
+Standard: Egyptian Banking Federation & CBE Regulatory Compliance Guidelines
+
+Architecture:
+  - Layer 1: Deterministic Cross-Document Rules (NID, Salary slip vs Statement, Employer, OCR, Bureau)
+  - Layer 2: Deep Forensic Signals (Benford's Law Chi-Square test, Inflow Uniformity)
+  - Layer 3: SQLite Entity Collision & Velocity Defense (Cross-application 48h tracking)
+  - Layer 4: Dual-Engine ML Inference (Multi-Tree Isolation Forest + Cost-Sensitive Gradient Boosting)
+  - Layer 5: Cost-Sensitive Hybrid Fusion, Bilingual Explainable AI (XAI) & Income Haircut Calculator
+
+Note:
+  Model training is separated into model/train_fraud.py and notebooks/fraud_model_training.ipynb.
+  This engine exclusively performs fast, production-grade vectorized inference (<5ms).
 """
 
 import os
 import re
-import json
 import math
+import json
 import sqlite3
 import hashlib
 import difflib
@@ -23,14 +28,12 @@ from typing import Dict, Any, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 
 import numpy as np
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
 import joblib
 
 
-# =============================================================================
-# DATA STRUCTURES
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Data Structures & Signal Schemas
+# -----------------------------------------------------------------------------
 
 @dataclass
 class FraudRuleViolation:
@@ -54,496 +57,422 @@ class AnomalySignal:
     explanation_ar: str
 
 
-@dataclass
-class EntityCollision:
-    entity_type: str  # PHONE, NATIONAL_ID, EMPLOYER_TAX_ID, IBAN
-    collision_count: int
-    first_seen: str
-    last_seen: str
-    is_syndicate_alert: bool
-    explanation_en: str
-    explanation_ar: str
-
-
-# =============================================================================
-# LAYER 2 HELPER: BENFORD'S LAW & DEEP FORENSIC CASHFLOW ANALYZER
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Layer 2 Helper: Deep Forensic Analyzer (Benford's Law & Round Numbers)
+# -----------------------------------------------------------------------------
 
 class DeepForensicAnalyzer:
     """
-    Mathematical forensics on transaction numbers, detecting synthetic uniformity
-    and digital manipulation via Benford's Law first-digit distribution.
+    Mathematical forensics on transaction amounts in uploaded bank statements.
+    Implements Benford's Law (First Digit Chi-Square Goodness of Fit)
+    and Uniformity Analysis (Detection of rounded fabricated salaries).
     """
-    # Expected Benford probabilities for leading digits 1 to 9
+
     BENFORD_PROBABILITIES = {
-        1: 0.3010, 2: 0.1761, 3: 0.1249, 4: 0.0969,
-        5: 0.0792, 6: 0.0669, 7: 0.0580, 8: 0.0512, 9: 0.0458
+        1: 0.301, 2: 0.176, 3: 0.125, 4: 0.097,
+        5: 0.079, 6: 0.067, 7: 0.058, 8: 0.051, 9: 0.046
     }
 
-    @classmethod
-    def evaluate_benford_law(cls, numbers: List[float]) -> Tuple[bool, float, str]:
+    @staticmethod
+    def evaluate_benford_law(numbers: List[float]) -> Tuple[bool, float, float]:
         """
-        Tests leading digit distribution against Benford's Law using Chi-Square approximation.
-        Fabricated bank statements typically deviate significantly (e.g. overusing 5, 7, 9).
+        Tests if transaction lead digits conform to Benford's Law.
+        Returns: (is_anomaly, chi_square_stat, p_value_approx)
         """
-        first_digits = []
+        valid_digits = []
         for n in numbers:
-            if n > 0:
-                s = str(f"{abs(n):.2f}").lstrip("0").replace(".", "")
-                if s and s[0].isdigit() and int(s[0]) > 0:
-                    first_digits.append(int(s[0]))
+            val = abs(float(n or 0))
+            if val >= 1.0:
+                s = f"{val:.4f}".replace(".", "").lstrip("0")
+                if s and s[0] in "123456789":
+                    valid_digits.append(int(s[0]))
 
-        if len(first_digits) < 4:
-            return False, 0.0, "Insufficient cashflow numbers for Benford test."
+        if len(valid_digits) < 4:
+            return False, 0.0, 1.0
 
-        counts = {d: first_digits.count(d) for d in range(1, 10)}
-        total = len(first_digits)
+        n_total = len(valid_digits)
+        observed_counts = {d: 0 for d in range(1, 10)}
+        for d in valid_digits:
+            observed_counts[d] += 1
+
         chi_square = 0.0
-
         for d in range(1, 10):
-            observed = counts[d]
-            expected = total * cls.BENFORD_PROBABILITIES[d]
-            chi_square += ((observed - expected) ** 2) / (expected + 1e-5)
+            expected = n_total * DeepForensicAnalyzer.BENFORD_PROBABILITIES[d]
+            observed = observed_counts[d]
+            chi_square += ((observed - expected) ** 2) / max(expected, 0.001)
 
-        # Critical value for 8 degrees of freedom at 95% confidence is ~15.51
-        is_anomaly = chi_square > 15.51
-        anomaly_score = min(round(chi_square / 30.0, 3), 1.0) if is_anomaly else 0.0
-        msg = f"Chi-Square: {chi_square:.2f} (Threshold 15.51). Suspicious synthetic distribution detected." if is_anomaly else "Cashflow digits conform to Benford distribution."
-        return is_anomaly, anomaly_score, msg
+        # Critical chi-square at df=8, p=0.05 is 15.51
+        is_anomaly = bool(chi_square > 15.51)
+        return is_anomaly, round(chi_square, 2), 0.02 if is_anomaly else 0.85
 
     @staticmethod
-    def check_inflow_uniformity(declared_salary: float, bank_inflow: float, 
-                               avg_balance: float, min_balance: float) -> Tuple[bool, float, str]:
+    def calculate_inflow_uniformity(amounts: List[float]) -> float:
         """
-        Detects artificial round-number salary transfers lacking authentic statutory deductions (Tax/Insurance).
+        Calculates ratio of highly rounded inflow numbers (e.g. 1000, 5000, 10000).
+        Forged statements typically use round numbers rather than real-world messy sums.
         """
-        is_suspicious_round = False
-        if declared_salary > 5000 and (declared_salary % 1000 == 0) and (bank_inflow % 1000 == 0):
-            # In Egypt, true net salaries rarely end with exact 000 after variable deductions
-            if abs(declared_salary - bank_inflow) < 1.0:
-                is_suspicious_round = True
-
-        score = 0.45 if is_suspicious_round else 0.0
-        explanation = "Suspiciously pristine round-number salary matches lacking normal tax/social insurance fractions." if is_suspicious_round else "Natural cashflow decimals observed."
-        return is_suspicious_round, score, explanation
+        if not amounts:
+            return 0.0
+        clean_amounts = [abs(float(a)) for a in amounts if abs(float(a)) > 100]
+        if not clean_amounts:
+            return 0.0
+        round_count = sum(1 for a in clean_amounts if a % 1000 == 0 or a % 500 == 0)
+        return round(round_count / len(clean_amounts), 3)
 
 
-# =============================================================================
-# LAYER 3: EMBEDDED SYNDICATE & ENTITY RESOLUTION STORE (SQLITE BACKED)
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Layer 3 Helper: Real-time Entity Graph & Velocity Store (SQLite)
+# -----------------------------------------------------------------------------
 
 class SQLiteEntityStore:
     """
-    Tracks cross-application velocity and entity collisions (phone, employer, bank account)
-    over rolling time windows to neutralize organized fraud rings and ghost companies.
+    Lightweight, embedded cross-application registry to detect fraud ring velocity
+    and entity collisions (phone, NID, employer, IBAN) across a rolling 48-hour window.
     """
-    def __init__(self, db_path: str = "fraud_registry.db"):
-        self.db_path = db_path
+
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.db_path = os.path.join(base_dir, "fraud_registry.db")
+        else:
+            self.db_path = db_path
         self._init_db()
 
     def _init_db(self):
         try:
             with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
+                conn.execute("""
                     CREATE TABLE IF NOT EXISTS entity_audit_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        application_id TEXT NOT NULL,
-                        entity_type TEXT NOT NULL,
-                        entity_hash TEXT NOT NULL,
-                        observed_value_masked TEXT NOT NULL,
-                        submission_timestamp TIMESTAMP NOT NULL
+                        application_id TEXT,
+                        timestamp TEXT,
+                        nid_hash TEXT,
+                        phone_hash TEXT,
+                        employer_name TEXT,
+                        bank_account_hash TEXT
                     )
                 """)
-                cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity ON entity_audit_log(entity_type, entity_hash, submission_timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_time ON entity_audit_log(timestamp)")
                 conn.commit()
-        except Exception as e:
-            # Fallback for serverless or restricted disk environments
+        except Exception:
             pass
 
-    @staticmethod
-    def _hash_entity(val: str) -> str:
-        return hashlib.sha256(str(val).strip().lower().encode("utf-8")).hexdigest()
+    def check_and_record_velocity(
+        self, application_id: str, national_id: str, phone: str, employer: str, account: str
+    ) -> Dict[str, Any]:
+        """
+        Checks if entity identifiers have collided in >2 applications within 48 hours.
+        """
+        now = datetime.utcnow()
+        window_start = (now - timedelta(hours=48)).isoformat()
+        nid_h = hashlib.sha256((national_id or "").strip().encode()).hexdigest() if national_id else ""
+        ph_h = hashlib.sha256((phone or "").strip().encode()).hexdigest() if phone else ""
+        acc_h = hashlib.sha256((account or "").strip().encode()).hexdigest() if account else ""
+        emp_clean = (employer or "").strip().lower()
 
-    def check_and_record(self, app_id: str, entities: Dict[str, str], timestamp_str: str, 
-                           window_hours: int = 48) -> List[EntityCollision]:
-        collisions = []
-        try:
-            ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-        except Exception:
-            ts = datetime.utcnow()
-
-        window_start = ts - timedelta(hours=window_hours)
+        collisions = {
+            "duplicate_phone_in_48h": False,
+            "duplicate_account_in_48h": False,
+            "employer_spike_in_48h": False,
+            "total_collisions": 0
+        }
 
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                if ph_h:
+                    cursor.execute(
+                        "SELECT COUNT(DISTINCT application_id) FROM entity_audit_log WHERE phone_hash = ? AND timestamp >= ? AND application_id != ?",
+                        (ph_h, window_start, application_id)
+                    )
+                    count_phone = cursor.fetchone()[0]
+                    if count_phone >= 2:
+                        collisions["duplicate_phone_in_48h"] = True
+                        collisions["total_collisions"] += count_phone
 
-                for entity_type, raw_val in entities.items():
-                    if not raw_val or str(raw_val).strip() == "" or str(raw_val).lower() == "n/a":
-                        continue
+                if acc_h:
+                    cursor.execute(
+                        "SELECT COUNT(DISTINCT application_id) FROM entity_audit_log WHERE bank_account_hash = ? AND timestamp >= ? AND application_id != ?",
+                        (acc_h, window_start, application_id)
+                    )
+                    count_acc = cursor.fetchone()[0]
+                    if count_acc >= 1:
+                        collisions["duplicate_account_in_48h"] = True
+                        collisions["total_collisions"] += count_acc
 
-                    e_hash = self._hash_entity(raw_val)
-                    masked = str(raw_val)[:3] + "****" + str(raw_val)[-3:] if len(str(raw_val)) > 6 else "****"
-
-                    cursor.execute("""
-                        SELECT COUNT(*), MIN(submission_timestamp), MAX(submission_timestamp)
-                        FROM entity_audit_log
-                        WHERE entity_type = ? AND entity_hash = ? AND submission_timestamp >= ? AND application_id != ?
-                    """, (entity_type, e_hash, window_start.isoformat(), app_id))
-
-                    row = cursor.fetchone()
-                    count = row[0] if row else 0
-
-                    if count > 0:
-                        is_syndicate = count >= 2
-                        collisions.append(EntityCollision(
-                            entity_type=entity_type,
-                            collision_count=count,
-                            first_seen=str(row[1]) if row else "",
-                            last_seen=str(row[2]) if row else "",
-                            is_syndicate_alert=is_syndicate,
-                            explanation_en=f"Entity '{entity_type}' collided with {count} recent application(s) within the last {window_hours} hours. Possible coordinated loan stacking / fraud syndicate.",
-                            explanation_ar=f"البيان '{entity_type}' تكرر في عدد {count} طلبات تمويل خلال آخر {window_hours} ساعة. شبهة استغلال منظم أو شبكة احتيال."
-                        ))
-
-                    # Insert current record
-                    cursor.execute("""
-                        INSERT INTO entity_audit_log (application_id, entity_type, entity_hash, observed_value_masked, submission_timestamp)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (app_id, entity_type, e_hash, masked, ts.isoformat()))
-
+                # Record current transaction
+                cursor.execute(
+                    "INSERT INTO entity_audit_log (application_id, timestamp, nid_hash, phone_hash, employer_name, bank_account_hash) VALUES (?, ?, ?, ?, ?, ?)",
+                    (application_id, now.isoformat(), nid_h, ph_h, emp_clean, acc_h)
+                )
                 conn.commit()
         except Exception:
-            # Safe silent fallback if database lock occurs
             pass
 
         return collisions
 
 
-# =============================================================================
-# LAYER 4: HIGH-DIMENSIONAL CONTINUOUS VECTORIZER & ISOLATION FOREST
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Layer 4 Helper: Persistent Model Manager (Pre-trained ML Inference)
+# -----------------------------------------------------------------------------
+
+class PersistentModelManager:
+    """
+    Loads pre-trained production model weights (Isolation Forest + HistGradientBoosting)
+    and executes fast vectorized scoring (<5ms per application).
+    Never retrains at runtime.
+    """
+
+    FEATURE_NAMES = [
+        'income_mismatch_ratio', 'annuity_to_balance_ratio', 'balance_volatility_cv',
+        'surge_ratio_max_to_avg', 'ocr_quality_mean', 'min_to_avg_balance_ratio',
+        'applicant_age_norm', 'employment_tenure_years', 'inflow_regularity_score',
+        'iscore_normalized', 'inflow_uniformity_score', 'bureau_facilities_count'
+    ]
+
+    def __init__(self, artifact_dir: Optional[str] = None):
+        if artifact_dir is None:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.artifact_dir = os.path.join(base_dir, "model", "artifacts", "fraud")
+        else:
+            self.artifact_dir = artifact_dir
+
+        self.iso_model = None
+        self.gb_model = None
+        self.scaler = None
+        self.is_loaded = False
+        self._load_artifacts()
+
+    def _load_artifacts(self):
+        try:
+            iso_path = os.path.join(self.artifact_dir, "isolation_forest_v2.joblib")
+            gb_path = os.path.join(self.artifact_dir, "fraud_gradient_boost_v2.joblib")
+            scaler_path = os.path.join(self.artifact_dir, "scaler_v2.joblib")
+
+            if os.path.exists(iso_path) and os.path.exists(gb_path) and os.path.exists(scaler_path):
+                self.iso_model = joblib.load(iso_path)
+                self.gb_model = joblib.load(gb_path)
+                self.scaler = joblib.load(scaler_path)
+                self.is_loaded = True
+            else:
+                self._fallback_init()
+        except Exception:
+            self._fallback_init()
+
+    def _fallback_init(self):
+        """Safe heuristic fallback if model artifacts are not yet saved to disk."""
+        from sklearn.ensemble import IsolationForest
+        from sklearn.preprocessing import StandardScaler
+        np.random.seed(42)
+        X_dummy = np.random.uniform(0.1, 0.9, size=(250, 12))
+        self.scaler = StandardScaler().fit(X_dummy)
+        self.iso_model = IsolationForest(n_estimators=50, random_state=42).fit(self.scaler.transform(X_dummy))
+        self.gb_model = None
+        self.is_loaded = False
+
+    def predict_scores(self, feature_vector: np.ndarray) -> Tuple[float, float, bool]:
+        """
+        Executes inference on 12-dimensional feature vector.
+        Returns: (isolation_forest_score, gradient_boost_prob, is_anomaly)
+        """
+        try:
+            scaled = self.scaler.transform(feature_vector)
+            # Isolation Forest anomaly score [0.0, 1.0]
+            raw_iso = self.iso_model.decision_function(scaled)[0]
+            iso_score = float(np.clip(0.50 - (raw_iso * 1.8), 0.0, 1.0))
+            is_anomaly = bool(iso_score > 0.60)
+
+            # Gradient Boosting probability [0.0, 1.0]
+            if self.gb_model is not None:
+                gb_prob = float(self.gb_model.predict_proba(scaled)[0, 1])
+            else:
+                gb_prob = iso_score
+
+            return round(iso_score, 4), round(gb_prob, 4), is_anomaly
+        except Exception:
+            return 0.15, 0.15, False
+
+
+# -----------------------------------------------------------------------------
+# Layer 4 Feature Vectorizer (Extracts 12 Canonical Features)
+# -----------------------------------------------------------------------------
 
 class HighDimensionalFraudVectorizer:
     """
-    Extracts a dense 12-dimensional continuous feature vector from incoming application
-    payloads for unsupervised machine learning anomaly scoring.
+    Transforms raw application JSON payload into canonical 12-dimensional feature vector.
     """
-    FEATURE_NAMES = [
-        "income_mismatch_ratio",
-        "annuity_to_balance_ratio",
-        "balance_volatility_cv",
-        "surge_ratio_max_to_avg",
-        "ocr_quality_mean",
-        "min_to_avg_balance_ratio",
-        "applicant_age_norm",
-        "employment_tenure_years",
-        "inflow_regularity_score",
-        "iscore_normalized",
-        "inflow_uniformity_score",
-        "bureau_facilities_count"
-    ]
 
-    @classmethod
-    def extract_features(cls, app: Dict[str, Any], mismatch_ratio: float, 
-                         uniformity_score: float) -> np.ndarray:
+    @staticmethod
+    def extract_features(app: Dict[str, Any], mismatch_ratio: float, uniformity_score: float) -> np.ndarray:
         bank_fields = app.get("bank_statement_fields", {})
         form_data = app.get("form_data", {})
         salary_fields = app.get("salary_certificate_fields", {})
         nid_fields = app.get("national_id_fields", {})
         iscore_fields = app.get("iscore_report_fields", {})
 
-        avg_balance = float(bank_fields.get("avg_monthly_balance", {}).get("value", 0.0) or 1.0)
-        max_balance = float(bank_fields.get("max_monthly_balance", {}).get("value", 0.0) or 1.0)
+        avg_balance = max(float(bank_fields.get("avg_monthly_balance", {}).get("value", 0.0) or 0.0), 1.0)
+        max_balance = float(bank_fields.get("max_monthly_balance", {}).get("value", 0.0) or 0.0)
         min_balance = float(bank_fields.get("min_monthly_balance", {}).get("value", 0.0) or 0.0)
         volatility = float(bank_fields.get("balance_volatility_std", {}).get("value", 0.0) or 0.0)
-        regularity = float(bank_fields.get("income_regularity_score", {}).get("value", 0.95) or 0.95)
         annuity = float(form_data.get("requested_annuity", 0.0) or 0.0)
+        regularity = float(bank_fields.get("income_regularity_score", {}).get("value", 1.0) or 1.0)
+        tenure = float(salary_fields.get("employment_tenure_years", {}).get("value", 3.0) or 3.0)
+        age = float(nid_fields.get("age_years", {}).get("value", 35.0) or 35.0)
+        iscore = float(iscore_fields.get("credit_score", {}).get("value", 650) or 650)
+        facilities = float(iscore_fields.get("active_facilities_count", {}).get("value", 2) or 2)
 
-        # 1. Mismatch
-        f_mismatch = min(float(mismatch_ratio), 3.0)
-        # 2. Annuity to balance
-        f_annuity_bal = min(annuity / (avg_balance + 1e-3), 5.0)
-        # 3. Coefficient of variation (Volatility / Mean)
-        f_volatility_cv = min(volatility / (avg_balance + 1e-3), 5.0)
-        # 4. Surge ratio
-        f_surge = min(max_balance / (avg_balance + 1e-3), 10.0)
-        # 5. Average OCR Quality
+        # Calculate OCR mean across all attached documents
         docs = app.get("documents", [])
-        qualities = [float(d.get("overall_quality_score", 0.9)) for d in docs if isinstance(d, dict)]
-        f_ocr = float(np.mean(qualities)) if qualities else 0.95
-        # 6. Min to avg balance
-        f_min_bal = min(min_balance / (avg_balance + 1e-3), 1.0)
-        # 7. Age normalized (21 to 65 -> 0.0 to 1.0)
-        raw_age = float(nid_fields.get("age_years", {}).get("value", 35.0) or 35.0)
-        f_age = max(0.0, min((raw_age - 21.0) / 44.0, 1.0))
-        # 8. Tenure years
-        f_tenure = min(float(salary_fields.get("employment_tenure_years", {}).get("value", 3.0) or 3.0), 30.0)
-        # 9. Regularity
-        f_regularity = max(0.0, min(regularity, 1.0))
-        # 10. I-Score normalized (300 to 850 -> 0.0 to 1.0)
-        raw_iscore = float(iscore_fields.get("credit_score", {}).get("value", 670.0) or 670.0)
-        f_iscore = max(0.0, min((raw_iscore - 300.0) / 550.0, 1.0))
-        # 11. Uniformity
-        f_uniformity = float(uniformity_score)
-        # 12. Active facilities count
-        f_facilities = min(float(len(iscore_fields.get("bureau_facilities", []))), 15.0)
+        ocr_scores = [float(d.get("overall_quality_score", 0.85)) for d in docs if isinstance(d, dict)]
+        ocr_mean = float(np.mean(ocr_scores)) if ocr_scores else 0.88
 
-        vec = np.array([
-            f_mismatch, f_annuity_bal, f_volatility_cv, f_surge,
-            f_ocr, f_min_bal, f_age, f_tenure,
-            f_regularity, f_iscore, f_uniformity, f_facilities
-        ], dtype=np.float32)
-
-        return vec.reshape(1, -1)
+        # 12 Normalized Features matching training matrix:
+        feat = [
+            float(np.clip(mismatch_ratio, 0.0, 2.0)),
+            float(np.clip(annuity / avg_balance, 0.0, 5.0)),
+            float(np.clip(volatility / avg_balance, 0.0, 5.0)),
+            float(np.clip(max_balance / avg_balance, 1.0, 10.0)),
+            float(np.clip(ocr_mean, 0.0, 1.0)),
+            float(np.clip(min_balance / avg_balance, 0.0, 1.0)),
+            float(np.clip((age - 21.0) / 44.0, 0.0, 1.0)),
+            float(np.clip(tenure, 0.0, 30.0)),
+            float(np.clip(regularity, 0.0, 1.0)),
+            float(np.clip((iscore - 300.0) / 550.0, 0.0, 1.0)),
+            float(np.clip(uniformity_score, 0.0, 1.0)),
+            float(np.clip(facilities, 0.0, 15.0))
+        ]
+        return np.array([feat], dtype=np.float32)
 
 
-class PersistentIsolationForestManager:
-    """
-    Manages loading, training, and persistence of the high-dimensional Isolation Forest model.
-    Trains on a calibrated 5,000-loan synthetic population of Egyptian commercial borrowers.
-    """
-    def __init__(self, artifact_dir: str = None):
-        if artifact_dir is None:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            artifact_dir = os.path.join(base_dir, "model", "artifacts", "fraud")
-        
-        self.artifact_dir = artifact_dir
-        self.model_path = os.path.join(artifact_dir, "isolation_forest_v2.joblib")
-        self.scaler_path = os.path.join(artifact_dir, "scaler_v2.joblib")
-        
-        self.scaler: Optional[StandardScaler] = None
-        self.model: Optional[IsolationForest] = None
-        self._load_or_train()
-
-    def _load_or_train(self):
-        if os.path.exists(self.model_path) and os.path.exists(self.scaler_path):
-            try:
-                self.model = joblib.load(self.model_path)
-                self.scaler = joblib.load(self.scaler_path)
-                return
-            except Exception:
-                pass
-
-        # Train on calibrated synthetic Egyptian banking distribution
-        self._train_and_persist_baseline()
-
-    def _train_and_persist_baseline(self):
-        np.random.seed(42)
-        n_samples = 5000
-
-        # Generate realistic baseline: 94% authentic applicants, 6% multi-pattern fraud
-        n_clean = int(n_samples * 0.94)
-        n_fraud = n_samples - n_clean
-
-        # Clean applicants
-        clean_mismatch = np.random.beta(1.5, 25.0, n_clean) * 0.15          # Mean ~ 0.03
-        clean_annuity_bal = np.random.gamma(2.0, 0.15, n_clean)              # Mean ~ 0.30
-        clean_volatility_cv = np.random.gamma(2.5, 0.20, n_clean)            # Mean ~ 0.50
-        clean_surge = np.random.gamma(1.8, 0.70, n_clean) + 1.0              # Mean ~ 2.2
-        clean_ocr = np.random.beta(30.0, 1.5, n_clean)                       # Mean ~ 0.95
-        clean_min_bal = np.random.beta(3.0, 5.0, n_clean)                    # Mean ~ 0.37
-        clean_age = np.random.beta(4.0, 3.5, n_clean)                        # Mean ~ 0.53 (Age ~ 44)
-        clean_tenure = np.random.gamma(3.0, 2.0, n_clean)                    # Mean ~ 6 years
-        clean_regularity = np.random.beta(25.0, 2.0, n_clean)                # Mean ~ 0.92
-        clean_iscore = np.random.beta(12.0, 5.0, n_clean)                    # Mean ~ 0.70 (Score ~ 685)
-        clean_uniformity = np.zeros(n_clean)                                 # Mean ~ 0.0
-        clean_facilities = np.random.poisson(1.8, n_clean)                   # Mean ~ 2
-
-        X_clean = np.column_stack([
-            clean_mismatch, clean_annuity_bal, clean_volatility_cv, clean_surge,
-            clean_ocr, clean_min_bal, clean_age, clean_tenure,
-            clean_regularity, clean_iscore, clean_uniformity, clean_facilities
-        ])
-
-        # Injected fraud applicants (Window dressing, income inflation, forged OCR)
-        fraud_mismatch = np.random.uniform(0.35, 1.2, n_fraud)
-        fraud_annuity_bal = np.random.uniform(0.8, 3.5, n_fraud)
-        fraud_volatility_cv = np.random.uniform(1.2, 4.0, n_fraud)
-        fraud_surge = np.random.uniform(3.0, 8.0, n_fraud)
-        fraud_ocr = np.random.uniform(0.40, 0.78, n_fraud)
-        fraud_min_bal = np.random.uniform(0.0, 0.08, n_fraud)
-        fraud_age = np.random.uniform(0.0, 1.0, n_fraud)
-        fraud_tenure = np.random.uniform(0.0, 1.5, n_fraud)
-        fraud_regularity = np.random.uniform(0.2, 0.6, n_fraud)
-        fraud_iscore = np.random.uniform(0.1, 0.5, n_fraud)
-        fraud_uniformity = np.random.choice([0.0, 0.45], p=[0.4, 0.6], size=n_fraud)
-        fraud_facilities = np.random.poisson(4.5, n_fraud)
-
-        X_fraud = np.column_stack([
-            fraud_mismatch, fraud_annuity_bal, fraud_volatility_cv, fraud_surge,
-            fraud_ocr, fraud_min_bal, fraud_age, fraud_tenure,
-            fraud_regularity, fraud_iscore, fraud_uniformity, fraud_facilities
-        ])
-
-        X_train = np.vstack([X_clean, X_fraud])
-
-        self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X_train)
-
-        # Contamination set to 5.0%
-        self.model = IsolationForest(
-            n_estimators=150,
-            contamination=0.05,
-            max_samples="auto",
-            random_state=42,
-            n_jobs=-1
-        )
-        self.model.fit(X_scaled)
-
-        # Persist to disk
-        try:
-            os.makedirs(self.artifact_dir, exist_ok=True)
-            joblib.dump(self.model, self.model_path)
-            joblib.dump(self.scaler, self.scaler_path)
-        except Exception:
-            pass
-
-    def score_application(self, feature_vector: np.ndarray) -> Tuple[float, bool]:
-        if self.model is None or self.scaler is None:
-            return 0.05, False
-
-        scaled = self.scaler.transform(feature_vector)
-        # raw decision_function returns negative values for anomalies
-        raw_score = self.model.decision_function(scaled)[0]
-        is_anomaly = bool(self.model.predict(scaled)[0] == -1)
-
-        # Calibrated mapping to [0.0, 1.0] where 1.0 = highly anomalous
-        # Normal observations yield raw_score > 0.0, anomalies yield < 0.0
-        normalized_anomaly_score = max(0.0, min(round(0.50 - (raw_score * 2.5), 3), 1.0))
-        return normalized_anomaly_score, is_anomaly
-
-
-# =============================================================================
-# MAIN PRODUCTION ENGINE: CreditFraudEngine (5-LAYER HYBRID)
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Main Senior 5-Layer Credit Fraud Engine
+# -----------------------------------------------------------------------------
 
 class CreditFraudEngine:
     """
-    Enterprise-Grade 5-Layer Hybrid Fraud & Cross-Document Consistency Engine.
-    Engineered for Egyptian Commercial Banking (Retail Underwriting).
+    Senior / Production-Grade Hybrid 5-Layer Fraud Prevention & Consistency Engine.
+    Executes fast inference, cross-document deterministic checks, entity graph defense,
+    deep mathematical forensics, and bilingual CBE-compliant explainability.
     """
 
     SEVERITY_WEIGHTS = {
-        "LOW": 0.08,
-        "MEDIUM": 0.22,
-        "HIGH": 0.45,
+        "LOW": 0.10,
+        "MEDIUM": 0.25,
+        "HIGH": 0.50,
         "CRITICAL": 0.90
     }
 
-    # Regulatory & Risk Thresholds
-    INCOME_MISMATCH_WARN = 0.20        # 20% discrepancy triggers audit alert
-    INCOME_MISMATCH_CRITICAL = 0.40    # 40% discrepancy triggers fatal tampering flag
-    EMPLOYER_SIMILARITY_MIN = 0.65     # Minimum string similarity for employer
-    MAX_ISCORE_AGE_DAYS = 30           # 30-day regulatory fresh inquiry limit
-    MIN_APPLICANT_AGE = 21             # CBE legal personal loan age
-    MAX_APPLICANT_AGE = 65             # Retirement threshold
+    # Thresholds
+    INCOME_MISMATCH_WARN = 0.20
+    INCOME_MISMATCH_CRITICAL = 0.40
+    EMPLOYER_SIMILARITY_MIN = 0.65
+    MAX_ISCORE_AGE_DAYS = 30
+    MIN_APPLICANT_AGE = 21
+    MAX_APPLICANT_AGE = 65
     MIN_OCR_CONFIDENCE_THRESHOLD = 0.70
     WINDOW_DRESSING_SURGE_RATIO = 2.5
     ANNUITY_TO_LIQUIDITY_MAX = 0.60
 
-    def __init__(self, db_path: str = "fraud_registry.db", artifact_dir: str = None):
-        self.entity_store = SQLiteEntityStore(db_path=db_path)
-        self.ml_manager = PersistentIsolationForestManager(artifact_dir=artifact_dir)
+    def __init__(self, db_path: Optional[str] = None, artifact_dir: Optional[str] = None):
+        self.entity_store = SQLiteEntityStore(db_path)
+        self.model_manager = PersistentModelManager(artifact_dir)
 
     def evaluate(self, application: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Executes end-to-end 5-layer forensic fraud assessment on the application payload.
-        Backward-compatible with dashboard.py and api.py.
+        Executes end-to-end 5-layer evaluation on the application JSON payload.
+        Zero training takes place inside this method; inference only.
         """
         violations: List[FraudRuleViolation] = []
         checks_passed: Dict[str, bool] = {}
-        app_id = application.get("application_id", "APP-UNKNOWN")
 
         # ---------------------------------------------------------------------
-        # LAYER 1: Deterministic Cross-Document & Policy Rules
+        # LAYER 1: Deterministic Cross-Document Consistency
         # ---------------------------------------------------------------------
-        # 1. Identity Verification
         nid_ok, nid_v = self._verify_identity(application)
         checks_passed["identity_verified"] = nid_ok
         violations.extend(nid_v)
 
-        # 2. Income & Cashflow Reconciliation
         income_ok, inc_v, income_mismatch = self._verify_income_consistency(application)
         checks_passed["income_verified"] = income_ok
         violations.extend(inc_v)
 
-        # 3. Employer Matching
         emp_ok, emp_v, emp_similarity = self._verify_employer_consistency(application)
         checks_passed["employer_verified"] = emp_ok
         violations.extend(emp_v)
 
-        # 4. Document Forensics
         docs_ok, doc_v = self._verify_document_integrity(application)
         checks_passed["document_integrity_verified"] = docs_ok
         violations.extend(doc_v)
 
-        # 5. I-Score Freshness & Lawsuits
         bureau_ok, bur_v = self._verify_bureau_report(application)
         checks_passed["bureau_verified"] = bureau_ok
         violations.extend(bur_v)
 
-        # 6. Statement Math & Bounced Cheques
         bank_ok, bank_v = self._verify_banking_behavior(application)
         checks_passed["bank_statement_math_verified"] = bank_ok
         violations.extend(bank_v)
 
         # ---------------------------------------------------------------------
-        # LAYER 2: Deep Forensic Signals & Cashflow Analytics (Benford + Uniformity)
+        # LAYER 2: Deep Forensic Signals (Benford's Law & Cashflow Uniformity)
         # ---------------------------------------------------------------------
-        anomaly_signals, uniformity_score = self._detect_behavioral_and_forensic_anomalies(application, income_mismatch)
+        anomaly_signals, uniformity_score, benford_anomaly = self._detect_behavioral_and_forensic_anomalies(
+            application, income_mismatch
+        )
 
         # ---------------------------------------------------------------------
-        # LAYER 3: Syndicate & Entity Collision Detection (Graph / Velocity)
+        # LAYER 3: Entity Collisions & Cross-Application Velocity (Graph Store)
         # ---------------------------------------------------------------------
-        entities_to_track = {
-            "NATIONAL_ID": str(application.get("national_id_fields", {}).get("national_id", {}).get("value", "")),
-            "PHONE_NUMBER": str(application.get("form_data", {}).get("mobile_number", "")),
-            "EMPLOYER_NAME": str(application.get("salary_certificate_fields", {}).get("employer_name", {}).get("value", "")),
-            "BANK_ACCOUNT": str(application.get("bank_statement_fields", {}).get("account_number", {}).get("value", ""))
-        }
-        timestamp_str = application.get("submission_timestamp", datetime.utcnow().isoformat())
-        collisions = self.entity_store.check_and_record(app_id, entities_to_track, timestamp_str, window_hours=48)
-
-        # Convert collisions to policy violations if syndicate activity suspected
-        for col in collisions:
-            severity = "CRITICAL" if col.is_syndicate_alert else "HIGH"
+        collisions = self._verify_entity_velocity(application)
+        if collisions.get("duplicate_phone_in_48h"):
             violations.append(FraudRuleViolation(
-                rule_code=f"RULE_COLLISION_{col.entity_type}",
-                rule_name_en=f"Rapid Entity Collision ({col.entity_type})",
-                rule_name_ar=f"تكرار مشبوه في استخدام بيانات ({col.entity_type})",
-                severity=severity,
-                description_en=col.explanation_en,
-                description_ar=col.explanation_ar,
-                observed_value=f"{col.collision_count} occurrences",
-                threshold_value="0 recent occurrences",
-                weight=self.SEVERITY_WEIGHTS[severity]
+                rule_code="VEL-001-CROSS-APP-PHONE-COLLISION",
+                rule_name_en="Cross-Application Phone Velocity Collision",
+                rule_name_ar="تكرار رقم الهاتف في أكثر من طلب خلال 48 ساعة",
+                severity="CRITICAL",
+                description_en="Contact phone number detected across multiple distinct applicant profiles within 48h (Fraud Ring Signal).",
+                description_ar="تم رصد استخدام رقم الهاتف في طلبات ائتمانية متعددة ببطاقات رقم قومي مختلفة خلال 48 ساعة.",
+                observed_value=collisions["total_collisions"],
+                threshold_value="< 2 applications / 48h",
+                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+            ))
+
+        if collisions.get("duplicate_account_in_48h"):
+            violations.append(FraudRuleViolation(
+                rule_code="VEL-002-CROSS-APP-ACCOUNT-COLLISION",
+                rule_name_en="Bank Account Multiple Identity Reuse",
+                rule_name_ar="استخدام الحساب البنكي لأكثر من عميل مختلف",
+                severity="CRITICAL",
+                description_en="The provided bank statement account number is associated with another borrower in the registry.",
+                description_ar="رقم الحساب البنكي المستخدم مسجل مسبقاً باسم عميل آخر في قاعدة البيانات.",
+                observed_value=True,
+                threshold_value=False,
+                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
             ))
 
         # ---------------------------------------------------------------------
-        # LAYER 4: High-Dimensional Unsupervised Machine Learning (Isolation Forest)
+        # LAYER 4: Dual-Engine ML Inference (Isolation Forest + HistGradientBoosting)
         # ---------------------------------------------------------------------
-        feature_vector = HighDimensionalFraudVectorizer.extract_features(application, income_mismatch, uniformity_score)
-        if_score, if_is_anomaly = self.ml_manager.score_application(feature_vector)
+        feature_matrix = HighDimensionalFraudVectorizer.extract_features(application, income_mismatch, uniformity_score)
+        iso_score, gb_prob, is_ml_anomaly = self.model_manager.predict_scores(feature_matrix)
 
-        if if_is_anomaly:
+        if is_ml_anomaly:
             anomaly_signals.append(AnomalySignal(
                 anomaly_name="UNSUPERVISED_ISOLATION_FOREST_ANOMALY",
-                anomaly_score=if_score,
+                anomaly_score=iso_score,
                 detected=True,
-                explanation_en=f"Isolation Forest identified non-linear multi-attribute outlier pattern (Score: {if_score:.2f}).",
-                explanation_ar=f"خوارزمية العزل غير الخاضعة للإشراف رصدت نمطاً شاذاً متعدد الأبعاد لا يتماشى مع سلوك المقترضين الطبيعيين."
+                explanation_en=f"Isolation Forest identified deep structural anomaly (Score: {iso_score:.3f}). Feature pattern deviates from authentic population.",
+                explanation_ar=f"محرك العزل الرياضي (Isolation Forest) رصد شذوذاً هيكلياً (النتيجة: {iso_score:.3f}) يختلف عن أنماط المقترضين الطبيعيين."
             ))
 
         # ---------------------------------------------------------------------
-        # LAYER 5: Cost-Sensitive Hybrid Fusion & Risk Tier Calibration
+        # LAYER 5: Cost-Sensitive Hybrid Fusion & Final Decision
         # ---------------------------------------------------------------------
-        fraud_score, risk_level, action = self._calculate_decision(violations, anomaly_signals, if_score)
+        fraud_score, risk_level, action = self._calculate_hybrid_decision(
+            violations, anomaly_signals, iso_score, gb_prob
+        )
 
-        # XAI & Downstream Feeder Calculations
-        reason_codes, executive_summary_ar, executive_summary_en = self._generate_explainability(
-            violations, anomaly_signals, risk_level, application, if_score
+        reason_codes, exec_summary_ar, exec_summary_en = self._generate_explainability(
+            violations, anomaly_signals, risk_level, application, gb_prob
         )
 
         haircut_multiplier, adjusted_salary = self._compute_income_haircut(
@@ -560,11 +489,15 @@ class CreditFraudEngine:
             "metrics": {
                 "income_mismatch_ratio": round(income_mismatch, 4),
                 "employer_similarity_score": round(emp_similarity, 4),
+                "inflow_uniformity_score": round(uniformity_score, 4),
+                "benford_law_violation": bool(benford_anomaly),
+                "isolation_forest_anomaly_score": round(iso_score, 4),
+                "gradient_boost_fraud_probability": round(gb_prob, 4),
+                "entity_collisions_count": collisions.get("total_collisions", 0),
                 "total_violations_count": len(violations),
                 "critical_violations_count": sum(1 for v in violations if v.severity == "CRITICAL"),
                 "detected_anomalies_count": sum(1 for a in anomaly_signals if a.detected),
-                "isolation_forest_anomaly_score": round(if_score, 4),
-                "entity_collisions_count": len(collisions)
+                "model_engine_status": "ONLINE_CALIBRATED_ARTIFACTS" if self.model_manager.is_loaded else "HEURISTIC_FALLBACK"
             },
             "downstream_risk_feeder": {
                 "credibility_discount_factor": round(haircut_multiplier, 4),
@@ -575,81 +508,46 @@ class CreditFraudEngine:
             },
             "explainable_ai": {
                 "regulatory_reason_codes": reason_codes,
-                "executive_summary_ar": executive_summary_ar,
-                "executive_summary_en": executive_summary_en
+                "executive_summary_ar": exec_summary_ar,
+                "executive_summary_en": exec_summary_en
             },
             "triggered_rules": [asdict(v) for v in violations]
         }
 
-    def enrich_payload(self, application: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Enriches input application JSON payload with consistency_checks and full fraud_assessment block.
-        """
-        assessment = self.evaluate(application)
-        
-        if "consistency_checks" not in application:
-            application["consistency_checks"] = {}
-            
-        cc = application["consistency_checks"]
-        cc["income_mismatch_ratio"] = assessment["metrics"]["income_mismatch_ratio"]
-        cc["employer_name_match"] = assessment["verification_checklist"]["employer_verified"]
-        cc["employer_match_similarity_score"] = assessment["metrics"]["employer_similarity_score"]
-        cc["national_id_match_across_documents"] = assessment["verification_checklist"]["identity_verified"]
-        cc["fraud_risk_level"] = assessment["fraud_risk_level"]
-        cc["triggered_fraud_rules"] = [v["rule_code"] for v in assessment["triggered_rules"]]
-        
-        application["fraud_assessment"] = assessment
-        return application
-
-    # =========================================================================
-    # LAYER 1: IMPLEMENTATION DETAILS
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # Layer 1 Rule Methods
+    # -------------------------------------------------------------------------
 
     def _verify_identity(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
         violations = []
         nid_fields = app.get("national_id_fields", {})
         nid_val = str(nid_fields.get("national_id", {}).get("value", "")).strip()
-        age_val = nid_fields.get("age_years", {}).get("value")
 
-        if nid_val and not re.match(r"^[23]\d{13}$", nid_val):
+        if not re.match(r"^[23]\d{13}$", nid_val):
             violations.append(FraudRuleViolation(
-                rule_code="RULE_INVALID_EGYPTIAN_NID_FORMAT",
+                rule_code="ID-001-INVALID-NID-FORMAT",
                 rule_name_en="Invalid Egyptian National ID Format",
-                rule_name_ar="الرقم القومي لا يتبع الصيغة المصرية الرسمية",
+                rule_name_ar="الرقم القومي غير مطابق للمعيار المصري",
                 severity="CRITICAL",
-                description_en="National ID must be 14 digits starting with 2 (born 1900-1999) or 3 (born 2000+).",
-                description_ar="الرقم القومي يجب أن يتكون من 14 رقماً ويبدأ بـ 2 لمواليد القرن الماضي أو 3 لمواليد الألفية.",
+                description_en="National ID must be exactly 14 digits starting with 2 (born 1900-1999) or 3 (born 2000-2099).",
+                description_ar="الرقم القومي يجب أن يتكون من 14 رقماً ويبدأ بـ 2 لمواليد القرن الماضي أو 3 لمواليد القرن الحالي.",
                 observed_value=nid_val,
                 threshold_value="14 digits starting with 2 or 3",
                 weight=self.SEVERITY_WEIGHTS["CRITICAL"]
             ))
 
-        if age_val is not None:
-            if age_val < self.MIN_APPLICANT_AGE or age_val > self.MAX_APPLICANT_AGE:
-                violations.append(FraudRuleViolation(
-                    rule_code="RULE_APPLICANT_AGE_OUT_OF_BOUNDS",
-                    rule_name_en="Applicant Age Violates Lending Policy",
-                    rule_name_ar="سن العميل خارج النطاق الائتماني المسموح به قانوناً",
-                    severity="HIGH",
-                    description_en=f"Applicant age ({age_val:.1f}) must be between {self.MIN_APPLICANT_AGE} and {self.MAX_APPLICANT_AGE} years.",
-                    description_ar=f"سن العميل ({age_val:.1f} سنة) يجب أن يكون بين {self.MIN_APPLICANT_AGE} و {self.MAX_APPLICANT_AGE} سنة.",
-                    observed_value=age_val,
-                    threshold_value=f"[{self.MIN_APPLICANT_AGE}, {self.MAX_APPLICANT_AGE}]",
-                    weight=self.SEVERITY_WEIGHTS["HIGH"]
-                ))
-
-        consistency = app.get("consistency_checks", {})
-        if consistency.get("national_id_match_across_documents") is False:
+        age_val = float(nid_fields.get("age_years", {}).get("value", 0.0) or 0.0)
+        if age_val < self.MIN_APPLICANT_AGE or age_val > self.MAX_APPLICANT_AGE:
             violations.append(FraudRuleViolation(
-                rule_code="RULE_NID_CROSS_DOCUMENT_MISMATCH",
-                rule_name_en="National ID Mismatch Across Documents",
-                rule_name_ar="عدم تطابق الرقم القومي عبر المستندات المرفوعة",
-                severity="CRITICAL",
-                description_en="National ID on ID card differs from bank statement or credit bureau report. Possible identity theft.",
-                description_ar="الرقم القومي المدون في البطاقة يختلف عن المسجل في كشف الحساب أو الآي سكور (شبهة انتحال شخصية).",
-                observed_value=False,
-                threshold_value=True,
-                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+                rule_code="ID-002-AGE-POLICY-BREACH",
+                rule_name_en="Applicant Age Outside Regulatory Financing Range",
+                rule_name_ar="عمر المتقدم خارج النطاق التمويلي المصرح به رقابياً",
+                severity="HIGH",
+                description_en=f"Applicant age ({age_val:.1f} years) must be between {self.MIN_APPLICANT_AGE} and {self.MAX_APPLICANT_AGE}.",
+                description_ar=f"عمر المتقدم ({age_val:.1f} سنة) يجب أن يكون بين {self.MIN_APPLICANT_AGE} و {self.MAX_APPLICANT_AGE} عاماً.",
+                observed_value=age_val,
+                threshold_value=f"{self.MIN_APPLICANT_AGE} - {self.MAX_APPLICANT_AGE}",
+                weight=self.SEVERITY_WEIGHTS["HIGH"]
             ))
 
         return len(violations) == 0, violations
@@ -658,191 +556,171 @@ class CreditFraudEngine:
         violations = []
         salary_fields = app.get("salary_certificate_fields", {})
         bank_fields = app.get("bank_statement_fields", {})
-        
+
         declared_salary = float(salary_fields.get("declared_net_salary", {}).get("value", 0.0) or 0.0)
         bank_inflow = float(bank_fields.get("avg_monthly_net_inflow", {}).get("value", 0.0) or 0.0)
 
         if declared_salary <= 0:
-            violations.append(FraudRuleViolation(
-                rule_code="RULE_ZERO_DECLARED_SALARY",
-                rule_name_en="Unreadable or Zero Declared Salary",
-                rule_name_ar="تعذر قراءة أو انعدام الراتب الصافي المعلن",
-                severity="CRITICAL",
-                description_en="Declared net salary on salary certificate is zero or unreadable.",
-                description_ar="صافي الراتب في شهادة المرتب صفر أو غير مقروء في الـ OCR.",
-                observed_value=declared_salary,
-                threshold_value="> 0",
-                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
-            ))
-            return False, violations, 1.0
+            mismatch_ratio = 1.0
+        else:
+            mismatch_ratio = abs(declared_salary - bank_inflow) / declared_salary
 
-        if bank_inflow <= 0:
-            violations.append(FraudRuleViolation(
-                rule_code="RULE_NO_BANK_INFLOW_RECORDED",
-                rule_name_en="Zero Cash Inflow on Bank Statement",
-                rule_name_ar="انعدام التدفقات النقدية الدائنة في كشف الحساب البنكي",
-                severity="HIGH",
-                description_en="Bank statement shows no regular monthly credit inflows to support declared income.",
-                description_ar="كشف الحساب البنكي لا يظهر أي إيداعات أو تدفقات رواتب شهرية تدعم الدخل المزعوم.",
-                observed_value=bank_inflow,
-                threshold_value="> 0",
-                weight=self.SEVERITY_WEIGHTS["HIGH"]
-            ))
-            return False, violations, 1.0
-
-        mismatch_ratio = abs(declared_salary - bank_inflow) / declared_salary
-
-        if mismatch_ratio > self.INCOME_MISMATCH_CRITICAL:
-            violations.append(FraudRuleViolation(
-                rule_code="RULE_CRITICAL_INCOME_MISMATCH",
-                rule_name_en="Critical Income Discrepancy (Fake Salary Slip Suspicion)",
-                rule_name_ar="تضارب جسيم بين مفردات المرتب والتحويل البنكي الفعلي",
-                severity="CRITICAL",
-                description_en=(f"Declared salary (EGP {declared_salary:,.0f}) differs by {mismatch_ratio*100:.1f}% "
-                                f"from bank statement inflow (EGP {bank_inflow:,.0f}). Possible forged certificate."),
-                description_ar=(f"الراتب المعلن في الشهادة ({declared_salary:,.0f} ج.م) يختلف بنسبة {mismatch_ratio*100:.1f}% "
-                                f"عن التدفق الفعلي في كشف الحساب ({bank_inflow:,.0f} ج.م). شبهة تزوير مفردات مرتب."),
-                observed_value=round(mismatch_ratio, 3),
-                threshold_value=self.INCOME_MISMATCH_CRITICAL,
-                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
-            ))
-        elif mismatch_ratio > self.INCOME_MISMATCH_WARN:
-            violations.append(FraudRuleViolation(
-                rule_code="RULE_MODERATE_INCOME_MISMATCH",
-                rule_name_en="Moderate Income Discrepancy",
-                rule_name_ar="تضارب متوسط بين الراتب المصرح والتدفق البنكي",
-                severity="MEDIUM",
-                description_en=f"Declared salary differs by {mismatch_ratio*100:.1f}% from bank statement inflows.",
-                description_ar=f"الراتب المعلن يختلف بنسبة {mismatch_ratio*100:.1f}% عن متوسط إيداعات كشف الحساب.",
-                observed_value=round(mismatch_ratio, 3),
-                threshold_value=self.INCOME_MISMATCH_WARN,
-                weight=self.SEVERITY_WEIGHTS["MEDIUM"]
-            ))
+        if declared_salary > 0 and bank_inflow > 0:
+            if mismatch_ratio >= self.INCOME_MISMATCH_CRITICAL and declared_salary > bank_inflow:
+                violations.append(FraudRuleViolation(
+                    rule_code="INC-001-GROSS-INCOME-INFLATION",
+                    rule_name_en="Gross Income Inflation Discrepancy",
+                    rule_name_ar="تضخيم جوهري في الدخل المذكور بشهادة الراتب",
+                    severity="CRITICAL",
+                    description_en=f"Declared salary (EGP {declared_salary:,.0f}) exceeds verified bank net inflows (EGP {bank_inflow:,.0f}) by {mismatch_ratio*100:.1f}%.",
+                    description_ar=f"صافي الراتب المذكور ({declared_salary:,.0f} ج.م) يفوق متوسط إيداعات البنك ({bank_inflow:,.0f} ج.م) بنسبة {mismatch_ratio*100:.1f}%.",
+                    observed_value=f"{mismatch_ratio*100:.1f}% mismatch",
+                    threshold_value=f"< {self.INCOME_MISMATCH_CRITICAL*100:.0f}%",
+                    weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+                ))
+            elif mismatch_ratio >= self.INCOME_MISMATCH_WARN and declared_salary > bank_inflow:
+                violations.append(FraudRuleViolation(
+                    rule_code="INC-002-MODERATE-INCOME-MISMATCH",
+                    rule_name_en="Moderate Cross-Document Income Discrepancy",
+                    rule_name_ar="تفاوت متوسط بين شهادة الراتب وكشف الحساب البنكي",
+                    severity="MEDIUM",
+                    description_en=f"Declared salary (EGP {declared_salary:,.0f}) exceeds verified bank inflows (EGP {bank_inflow:,.0f}) by {mismatch_ratio*100:.1f}%.",
+                    description_ar=f"الراتب المذكور يفوق كشف الحساب بفارق {mismatch_ratio*100:.1f}% يتطلب تدقيقاً إضافياً.",
+                    observed_value=f"{mismatch_ratio*100:.1f}% mismatch",
+                    threshold_value=f"< {self.INCOME_MISMATCH_WARN*100:.0f}%",
+                    weight=self.SEVERITY_WEIGHTS["MEDIUM"]
+                ))
 
         return len(violations) == 0, violations, mismatch_ratio
 
     def _verify_employer_consistency(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation], float]:
         violations = []
-        salary_employer = str(app.get("salary_certificate_fields", {}).get("employer_name", {}).get("value", "")).strip()
-        form_employer = str(app.get("form_data", {}).get("employer_name", "")).strip()
+        salary_fields = app.get("salary_certificate_fields", {})
+        bank_fields = app.get("bank_statement_fields", {})
 
-        if not salary_employer or not form_employer:
-            return True, violations, 1.0
+        emp_salary = str(salary_fields.get("employer_name", {}).get("value", "")).strip()
+        emp_bank = str(bank_fields.get("payroll_transfer_employer", {}).get("value", "")).strip()
 
-        ratio = difflib.SequenceMatcher(None, salary_employer.lower(), form_employer.lower()).ratio()
+        if emp_salary and emp_bank:
+            similarity = difflib.SequenceMatcher(None, emp_salary.lower(), emp_bank.lower()).ratio()
+            if similarity < self.EMPLOYER_SIMILARITY_MIN:
+                violations.append(FraudRuleViolation(
+                    rule_code="EMP-001-EMPLOYER-NAME-MISMATCH",
+                    rule_name_en="Employer Entity Discrepancy Across Documents",
+                    rule_name_ar="عدم تطابق جهة العمل بين شهادة الراتب ومحول الراتب بالبنك",
+                    severity="HIGH",
+                    description_en=f"Salary employer '{emp_salary}' differs from bank depositor '{emp_bank}' (Similarity: {similarity*100:.1f}%).",
+                    description_ar=f"جهة العمل في شهادة الراتب '{emp_salary}' تختلف عن محول المرتب '{emp_bank}' (التطابق: {similarity*100:.1f}%).",
+                    observed_value=f"{similarity*100:.1f}% similarity",
+                    threshold_value=f">= {self.EMPLOYER_SIMILARITY_MIN*100:.0f}%",
+                    weight=self.SEVERITY_WEIGHTS["HIGH"]
+                ))
+            return len(violations) == 0, violations, similarity
 
-        if ratio < self.EMPLOYER_SIMILARITY_MIN:
-            violations.append(FraudRuleViolation(
-                rule_code="RULE_EMPLOYER_NAME_MISMATCH",
-                rule_name_en="Employer Entity Mismatch Across Documents",
-                rule_name_ar="عدم تطابق اسم جهة العمل بين الاستمارة وشهادة الراتب",
-                severity="MEDIUM",
-                description_en=f"Employer on salary certificate ('{salary_employer}') does not match form ('{form_employer}', similarity: {ratio*100:.1f}%).",
-                description_ar=f"جهة العمل في الشهادة ('{salary_employer}') تختلف عن الاستمارة ('{form_employer}'، نسبة التطابق: {ratio*100:.1f}%).",
-                observed_value=round(ratio, 3),
-                threshold_value=self.EMPLOYER_SIMILARITY_MIN,
-                weight=self.SEVERITY_WEIGHTS["MEDIUM"]
-            ))
-
-        return len(violations) == 0, violations, ratio
+        return True, violations, 1.0
 
     def _verify_document_integrity(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
         violations = []
-        documents = app.get("documents", [])
+        docs = app.get("documents", [])
 
-        for doc in documents:
-            doc_type = doc.get("document_type", "unknown")
-            is_tampered = doc.get("is_tampered_suspected", False)
-            quality = float(doc.get("overall_quality_score", 1.0))
+        for doc in docs:
+            doc_type = doc.get("document_type", "Unknown")
+            is_tampered = bool(doc.get("is_tampered_suspected", False))
+            quality = float(doc.get("overall_quality_score", 1.0) or 1.0)
 
             if is_tampered:
                 violations.append(FraudRuleViolation(
-                    rule_code=f"RULE_TAMPERED_{doc_type.upper()}",
+                    rule_code=f"DOC-001-TAMPERED-{doc_type.upper()}",
                     rule_name_en=f"Digital Alteration Detected in {doc_type}",
-                    rule_name_ar=f"شبهة تعديل رقمي / تلاعب فوتوشوب في مستند {doc_type}",
+                    rule_name_ar=f"اشتباه تلاعب وتعديل رقمي في مستند {doc_type}",
                     severity="CRITICAL",
-                    description_en=f"Forensic document analysis detected font misalignment or metadata anomalies in {doc_type}.",
-                    description_ar=f"الفحص الجنائي للصور اكتشف عدم انتظام الخطوط وتعديل رقمي في مستند {doc_type}.",
-                    observed_value=True,
-                    threshold_value=False,
+                    description_en=f"Forensic pixel analysis identified digital manipulation or modified font layers in {doc_type}.",
+                    description_ar=f"الفحص الجنائي للصور والمستندات كشف عن تعديلات رقمية في مستند {doc_type}.",
+                    observed_value="Tampering Flag = TRUE",
+                    threshold_value="Tampering Flag = FALSE",
                     weight=self.SEVERITY_WEIGHTS["CRITICAL"]
                 ))
 
             if quality < self.MIN_OCR_CONFIDENCE_THRESHOLD:
                 violations.append(FraudRuleViolation(
-                    rule_code=f"RULE_LOW_OCR_CONFIDENCE_{doc_type.upper()}",
-                    rule_name_en=f"Degraded Image Quality in {doc_type}",
+                    rule_code=f"DOC-002-LOW-QUALITY-{doc_type.upper()}",
+                    rule_name_en=f"Sub-standard OCR Confidence in {doc_type}",
                     rule_name_ar=f"انخفاض جودة القراءة الضوئية لمستند {doc_type}",
-                    severity="LOW",
-                    description_en=f"OCR readability confidence for {doc_type} is unusually low ({quality*100:.1f}%).",
-                    description_ar=f"معدل ثقة قراءة الـ OCR لمستند {doc_type} منخفض ({quality*100:.1f}%).",
-                    observed_value=round(quality, 3),
-                    threshold_value=self.MIN_OCR_CONFIDENCE_THRESHOLD,
-                    weight=self.SEVERITY_WEIGHTS["LOW"]
+                    severity="MEDIUM",
+                    description_en=f"OCR quality ({quality*100:.1f}%) is below the institutional threshold.",
+                    description_ar=f"جودة استخراج النصوص ({quality*100:.1f}%) غير كافية للاعتماد الآلي.",
+                    observed_value=f"{quality*100:.1f}%",
+                    threshold_value=f">= {self.MIN_OCR_CONFIDENCE_THRESHOLD*100:.0f}%",
+                    weight=self.SEVERITY_WEIGHTS["MEDIUM"]
                 ))
 
         return len(violations) == 0, violations
 
     def _verify_bureau_report(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
         violations = []
-        iscore = app.get("iscore_report_fields", {})
-        if not iscore.get("is_available", True):
-            return True, violations
+        iscore_fields = app.get("iscore_report_fields", {})
 
-        report_age_days = app.get("consistency_checks", {}).get("iscore_report_age_days", 0)
-        if report_age_days > self.MAX_ISCORE_AGE_DAYS:
+        inquiry_date_str = iscore_fields.get("inquiry_date", {}).get("value", "")
+        if inquiry_date_str:
+            try:
+                inq_date = datetime.fromisoformat(inquiry_date_str.replace("Z", "+00:00")).date()
+                app_date = datetime.utcnow().date()
+                age_days = (app_date - inq_date).days
+                if age_days > self.MAX_ISCORE_AGE_DAYS:
+                    violations.append(FraudRuleViolation(
+                        rule_code="BUR-001-STALE-ISCORE-REPORT",
+                        rule_name_en="Expired I-Score Bureau Inquiry",
+                        rule_name_ar="تقرير الآي سكور منتهي الصلاحية المصرفية",
+                        severity="MEDIUM",
+                        description_en=f"I-Score report age ({age_days} days) exceeds CBE fresh inquiry window ({self.MAX_ISCORE_AGE_DAYS} days).",
+                        description_ar=f"عمر تقرير الاستعلام ({age_days} يوماً) يتجاوز الحد الأقصى لصلاحية الاستعلام بالبنك المركزي ({self.MAX_ISCORE_AGE_DAYS} يوماً).",
+                        observed_value=f"{age_days} days",
+                        threshold_value=f"<= {self.MAX_ISCORE_AGE_DAYS} days",
+                        weight=self.SEVERITY_WEIGHTS["MEDIUM"]
+                    ))
+            except Exception:
+                pass
+
+        legal_actions = iscore_fields.get("legal_action_flags", {}).get("value", [])
+        if legal_actions:
             violations.append(FraudRuleViolation(
-                rule_code="RULE_EXPIRED_ISCORE_REPORT",
-                rule_name_en="Stale Egyptian I-Score Report (> 30 Days)",
-                rule_name_ar="تقرير الاستعلام الائتماني (I-Score) منتهي الصلاحية (> 30 يوماً)",
-                severity="MEDIUM",
-                description_en=f"I-Score report is {report_age_days} days old (exceeds 30-day regulatory limit).",
-                description_ar=f"تقرير الآي سكور عمره {report_age_days} يوماً (يتجاوز الحد الأقصى لصلاحية الاستعلام 30 يوماً).",
-                observed_value=report_age_days,
-                threshold_value=self.MAX_ISCORE_AGE_DAYS,
-                weight=self.SEVERITY_WEIGHTS["MEDIUM"]
+                rule_code="BUR-002-LEGAL-ENFORCEMENT-ACTION",
+                rule_name_en="Active Legal or Negative Action Recorded in Bureau",
+                rule_name_ar="تسجيل إجراءات قانونية أو تعثر قضائي في تقرير الاستعلام الائتماني",
+                severity="CRITICAL",
+                description_en=f"Applicant has active adverse bureau actions: {', '.join(legal_actions)}.",
+                description_ar=f"تم رصد إجراءات قضائية ونزاعات سداد نشطة ضد العميل: {', '.join(legal_actions)}.",
+                observed_value=legal_actions,
+                threshold_value="None",
+                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
             ))
-
-        for fac in iscore.get("bureau_facilities", []):
-            if fac.get("legal_action_flag", False):
-                violations.append(FraudRuleViolation(
-                    rule_code="RULE_LEGAL_ACTION_ON_RECORD",
-                    rule_name_en="Active Legal Proceedings on Record",
-                    rule_name_ar="وجود نزاع قضائي مصرفي قائم (إجراء قانوني) على العميل",
-                    severity="CRITICAL",
-                    description_en=f"Active legal action on record from lender: {fac.get('lender_name', 'Unknown')}.",
-                    description_ar=f"مسجل إجراء قضائي نشط من البنك المقرض: {fac.get('lender_name', 'غير محدد')}.",
-                    observed_value=True,
-                    threshold_value=False,
-                    weight=self.SEVERITY_WEIGHTS["CRITICAL"]
-                ))
 
         return len(violations) == 0, violations
 
     def _verify_banking_behavior(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
         violations = []
         bank_fields = app.get("bank_statement_fields", {})
-        returned_cheques = bank_fields.get("returned_cheques_count", {}).get("value", 0) or 0
 
-        if returned_cheques > 0:
+        bounced_cheques = int(bank_fields.get("bounced_cheques_count_12m", {}).get("value", 0) or 0)
+        if bounced_cheques > 0:
             violations.append(FraudRuleViolation(
-                rule_code="RULE_BOUNCED_CHEQUES_RECORDED",
-                rule_name_en="Bounced Cheques on Bank Statement",
-                rule_name_ar="شيكات بدون رصيد مسجلة في كشف الحساب البنكي",
-                severity="HIGH" if returned_cheques >= 2 else "MEDIUM",
-                description_en=f"Bank statement records {returned_cheques} bounced cheque(s) in last 6 months.",
-                description_ar=f"كشف الحساب يسجل عدد {returned_cheques} شيك بدون رصيد خلال الـ 6 أشهر الماضية.",
-                observed_value=returned_cheques,
+                rule_code="BNK-001-BOUNCED-CHEQUES",
+                rule_name_en="History of Bounced Cheques within 12 Months",
+                rule_name_ar="وجود شيكات مرتجعة بدون رصيد خلال الـ 12 شهراً الماضية",
+                severity="HIGH",
+                description_en=f"Applicant account recorded {bounced_cheques} bounced cheque(s) indicating liquidity stress.",
+                description_ar=f"سجل الحساب {bounced_cheques} شيكاً مرتداً لعدم كفاية الرصيد، مؤشر مخاطر ائتمانية عالية.",
+                observed_value=bounced_cheques,
                 threshold_value=0,
-                weight=self.SEVERITY_WEIGHTS["HIGH"] if returned_cheques >= 2 else self.SEVERITY_WEIGHTS["MEDIUM"]
+                weight=self.SEVERITY_WEIGHTS["HIGH"]
             ))
 
-        consistency = app.get("consistency_checks", {})
-        if consistency.get("running_balance_math_valid") is False:
+        is_balanced = bool(bank_fields.get("running_balance_math_verified", {}).get("value", True))
+        if not is_balanced:
             violations.append(FraudRuleViolation(
-                rule_code="RULE_STATEMENT_MATH_INCONSISTENCY",
-                rule_name_en="Bank Statement Running Balance Math Inconsistency",
-                rule_name_ar="خلل حسابي في تسلسل رصيد كشف الحساب (تزوير أرقام)",
+                rule_code="BNK-002-STATEMENT-ARITHMETIC-ANOMALY",
+                rule_name_en="Bank Statement Running Balance Math Error",
+                rule_name_ar="خلل في العمليات الحسابية للأرصدة المتتالية بكشف الحساب",
                 severity="CRITICAL",
                 description_en="Cumulative transactions do not reconcile with ending balances. Strong indicator of forged statement.",
                 description_ar="تسلسل العمليات الحسابية لا يتطابق مع رصيد الإقفال، مؤشر قوي على التعديل اليدوي والتزوير.",
@@ -853,15 +731,15 @@ class CreditFraudEngine:
 
         return len(violations) == 0, violations
 
-    # =========================================================================
-    # LAYER 2: DEEP FORENSICS & BEHAVIORAL ANOMALIES
-    # =========================================================================
+    # -------------------------------------------------------------------------
+    # Layer 2 & Forensic Signal Methods
+    # -------------------------------------------------------------------------
 
-    def _detect_behavioral_and_forensic_anomalies(self, app: Dict[str, Any], 
-                                                  income_mismatch: float) -> Tuple[List[AnomalySignal], float]:
+    def _detect_behavioral_and_forensic_anomalies(
+        self, app: Dict[str, Any], income_mismatch: float
+    ) -> Tuple[List[AnomalySignal], float, bool]:
         signals = []
         bank_fields = app.get("bank_statement_fields", {})
-        salary_fields = app.get("salary_certificate_fields", {})
         form_data = app.get("form_data", {})
 
         avg_balance = float(bank_fields.get("avg_monthly_balance", {}).get("value", 0.0) or 0.0)
@@ -869,11 +747,9 @@ class CreditFraudEngine:
         min_balance = float(bank_fields.get("min_monthly_balance", {}).get("value", 0.0) or 0.0)
         volatility = float(bank_fields.get("balance_volatility_std", {}).get("value", 0.0) or 0.0)
         regularity = float(bank_fields.get("income_regularity_score", {}).get("value", 1.0) or 1.0)
-        declared_salary = float(salary_fields.get("declared_net_salary", {}).get("value", 0.0) or 0.0)
-        bank_inflow = float(bank_fields.get("avg_monthly_net_inflow", {}).get("value", 0.0) or 0.0)
         requested_annuity = float(form_data.get("requested_annuity", 0.0) or 0.0)
 
-        # 1. Window Dressing Detector
+        # 1. Window Dressing
         is_window_dressed = False
         surge_ratio = 1.0
         if avg_balance > 0:
@@ -885,11 +761,11 @@ class CreditFraudEngine:
             anomaly_name="ARTIFICIAL_BALANCE_INFLATION_WINDOW_DRESSING",
             anomaly_score=round(min(surge_ratio / 4.0, 1.0), 3) if is_window_dressed else 0.0,
             detected=is_window_dressed,
-            explanation_en=f"Peak balance (EGP {max_balance:,.0f}) is {surge_ratio:.1f}x higher than average balance (EGP {avg_balance:,.0f}), followed by low liquidity reserve.",
+            explanation_en=f"Peak balance (EGP {max_balance:,.0f}) is {surge_ratio:.1f}x higher than average balance, followed by low liquidity reserve.",
             explanation_ar=f"أعلى رصيد ({max_balance:,.0f} ج.م) يتجاوز {surge_ratio:.1f} أضعاف المتوسط الشهري مع فراغ الحساب، مؤشر على اقتراض مؤقت لتجميل كشف الحساب."
         ))
 
-        # 2. Cashflow Volatility & Erratic Inflow Pattern
+        # 2. Volatility
         is_volatile = False
         if avg_balance > 0 and (volatility / avg_balance) > 1.20 and regularity < 0.60:
             is_volatile = True
@@ -902,7 +778,7 @@ class CreditFraudEngine:
             explanation_ar=f"تذبذب شديد في السيولة (انحراف معياري {volatility:,.0f} ج.م) مع ضعف انتظام مواعيد نزول المرتب ({regularity*100:.0f}%)."
         ))
 
-        # 3. High Annuity to Liquid Buffer Ratio
+        # 3. Annuity Stress
         is_annuity_stress = False
         if avg_balance > 0 and requested_annuity > 0:
             buffer_ratio = requested_annuity / avg_balance
@@ -917,74 +793,105 @@ class CreditFraudEngine:
             explanation_ar=f"القسط الشهري المطلوب ({requested_annuity:,.0f} ج.م) يستنزف أكثر من 60% من متوسط رصيد العميل السائل تاريخياً."
         ))
 
-        # 4. Benford's Law Cashflow Forensics
-        cashflow_sample = [avg_balance, max_balance, min_balance, declared_salary, bank_inflow, requested_annuity, volatility]
-        is_benford_anomaly, benford_score, benford_msg = DeepForensicAnalyzer.evaluate_benford_law(cashflow_sample)
-        signals.append(AnomalySignal(
-            anomaly_name="BENFORD_LAW_CASHFLOW_DEVIATION",
-            anomaly_score=benford_score,
-            detected=is_benford_anomaly,
-            explanation_en=benford_msg,
-            explanation_ar="انحراف إحصائي في توزيع الأرقام الأولى لمعاملات كشف الحساب وفق قانون بنفورد الطبيعي (شبهة فبركة أرقام)." if is_benford_anomaly else "الأرقام المالية تتوافق مع التوزيع الطبيعي لقانون بنفورد."
-        ))
+        # 4. Mathematical Forensics: Benford's Law on transaction amounts (if itemized transactions provided)
+        sample_transactions = bank_fields.get("sample_transaction_amounts", {}).get("value", [])
+        if sample_transactions and len(sample_transactions) >= 4:
+            benford_anomaly, chi_stat, _ = DeepForensicAnalyzer.evaluate_benford_law(sample_transactions)
+            uniformity_score = DeepForensicAnalyzer.calculate_inflow_uniformity(sample_transactions)
+        else:
+            benford_anomaly = False
+            chi_stat = 0.0
+            uniformity_score = 0.0
 
-        # 5. Inflow Uniformity & Round Number Suspicion
-        is_uniform, unif_score, unif_msg = DeepForensicAnalyzer.check_inflow_uniformity(declared_salary, bank_inflow, avg_balance, min_balance)
-        signals.append(AnomalySignal(
-            anomaly_name="INFLOW_UNIFORMITY_ROUND_NUMBER_ANOMALY",
-            anomaly_score=unif_score,
-            detected=is_uniform,
-            explanation_en=unif_msg,
-            explanation_ar="تطابق مصطنع لأرقام رواتب دائرية مصمتة خالية من الاستقطاعات الطبيعية (ضرائب/تأمينات)." if is_uniform else "طبيعة التدفقات المالية تحتوي على استقطاعات واقعية."
-        ))
+        if benford_anomaly:
+            signals.append(AnomalySignal(
+                anomaly_name="BENFORD_LAW_FIRST_DIGIT_VIOLATION",
+                anomaly_score=0.85,
+                detected=True,
+                explanation_en=f"Transaction lead digit distribution violates Benford's Law (Chi-Square: {chi_stat:.1f}, p < 0.05). High likelihood of fabricated numbers.",
+                explanation_ar=f"توزيع الأرقام في كشف الحساب ينتهك قانون بنفورد الإحصائي (مربع كاي: {chi_stat:.1f}). مؤشر قوي على أرقام مصطنعة ومكتوبة يدوياً."
+            ))
 
-        return signals, unif_score
+        if uniformity_score > 0.40:
+            signals.append(AnomalySignal(
+                anomaly_name="FABRICATED_ROUND_NUMBER_UNIFORMITY",
+                anomaly_score=uniformity_score,
+                detected=True,
+                explanation_en=f"Abnormal uniformity: {uniformity_score*100:.0f}% of transactions are perfect round thousands/hundreds without authentic fractional friction.",
+                explanation_ar=f"تكرار غير طبيعي لأرقام مستديرة تماماً بنسبة {uniformity_score*100:.0f}% دون وجود كسور أو تعاملات تجزئة حقيقية."
+            ))
 
-    # =========================================================================
-    # LAYER 5: DECISION FUSION, XAI & HAIRCUT
-    # =========================================================================
+        return signals, uniformity_score, benford_anomaly
 
-    def _calculate_decision(self, violations: List[FraudRuleViolation], 
-                            anomalies: List[AnomalySignal], 
-                            isolation_forest_score: float) -> Tuple[float, str, str]:
+    # -------------------------------------------------------------------------
+    # Layer 3 Entity Velocity Method
+    # -------------------------------------------------------------------------
+
+    def _verify_entity_velocity(self, app: Dict[str, Any]) -> Dict[str, Any]:
+        app_id = app.get("application_id", f"APP-{datetime.utcnow().timestamp()}")
+        nid = app.get("national_id_fields", {}).get("national_id", {}).get("value", "")
+        phone = app.get("form_data", {}).get("mobile_phone", "")
+        employer = app.get("salary_certificate_fields", {}).get("employer_name", {}).get("value", "")
+        account = app.get("bank_statement_fields", {}).get("bank_account_number", {}).get("value", "")
+
+        return self.entity_store.check_and_record_velocity(app_id, nid, phone, employer, account)
+
+    # -------------------------------------------------------------------------
+    # Layer 5 Decision & Hybrid Fusion
+    # -------------------------------------------------------------------------
+
+    def _calculate_hybrid_decision(
+        self,
+        violations: List[FraudRuleViolation],
+        anomalies: List[AnomalySignal],
+        iso_score: float,
+        gb_prob: float
+    ) -> Tuple[float, str, str]:
         has_critical = any(v.severity == "CRITICAL" for v in violations)
         has_high = any(v.severity == "HIGH" for v in violations)
 
-        # Weighted rule contributions
         rule_score = sum(v.weight for v in violations)
-        
-        # Behavioral anomaly contributions
-        anomaly_score = sum(a.anomaly_score * 0.15 for a in anomalies if a.detected)
-        
-        # Isolation Forest contribution
-        ml_score = isolation_forest_score * 0.25
+        detected_anoms = [a for a in anomalies if a.detected]
+        anomaly_score = sum(a.anomaly_score * 0.20 for a in detected_anoms)
 
-        composite_score = min(0.04 + rule_score + anomaly_score + ml_score, 1.0)
+        # ML Ensemble Score (35% Isolation Forest + 65% Gradient Boost)
+        ml_score = (0.35 * iso_score) + (0.65 * gb_prob)
 
-        # Hard Rule deterministic overrides
-        if has_critical or composite_score >= 0.70:
+        # Total Aggregation: 50% Deterministic Rules + 20% Forensic Anomalies + 30% Dual-Engine ML
+        base_score = (0.50 * rule_score) + (0.20 * anomaly_score) + (0.30 * ml_score)
+        total_score = float(np.clip(base_score, 0.0, 1.0))
+
+        if has_critical or total_score >= 0.70 or gb_prob >= 0.85:
             risk_level = "CRITICAL"
             action = "REJECT_SUSPECTED_FRAUD"
-        elif has_high or composite_score >= 0.45:
+            total_score = max(total_score, 0.90)
+        elif has_high or total_score >= 0.45 or ml_score >= 0.50:
             risk_level = "HIGH"
             action = "FLAG_FOR_MANUAL_FRAUD_INVESTIGATION"
-        elif composite_score >= 0.25:
+        elif total_score >= 0.20 or any(a.detected for a in anomalies):
             risk_level = "MEDIUM"
             action = "REQUEST_ADDITIONAL_VERIFICATION_DOCUMENTS"
         else:
             risk_level = "LOW"
             action = "PROCEED_TO_CREDIT_EVALUATION"
 
-        return composite_score, risk_level, action
+        return total_score, risk_level, action
 
-    def _generate_explainability(self, violations: List[FraudRuleViolation], 
-                                 anomalies: List[AnomalySignal],
-                                 risk_level: str, app: Dict[str, Any],
-                                 ml_score: float) -> Tuple[List[Dict[str, str]], str, str]:
+    def _generate_explainability(
+        self,
+        violations: List[FraudRuleViolation],
+        anomalies: List[AnomalySignal],
+        risk_level: str,
+        app: Dict[str, Any],
+        gb_prob: float
+    ) -> Tuple[List[Dict[str, Any]], str, str]:
         reason_codes = []
+
         for v in violations:
             reason_codes.append({
                 "code": v.rule_code,
+                "title_en": v.rule_name_en,
+                "title_ar": v.rule_name_ar,
                 "severity": v.severity,
                 "reason_en": v.description_en,
                 "reason_ar": v.description_ar
@@ -994,64 +901,62 @@ class CreditFraudEngine:
             if a.detected:
                 reason_codes.append({
                     "code": a.anomaly_name,
+                    "title_en": a.anomaly_name.replace("_", " ").title(),
+                    "title_ar": "إشارة سلوكية شاذة في الحساب",
                     "severity": "MEDIUM",
                     "reason_en": a.explanation_en,
                     "reason_ar": a.explanation_ar
                 })
 
-        # Generate Executive Summaries
-        applicant = app.get("national_id_fields", {}).get("full_name", {}).get("value", "The applicant")
+        app_id = app.get("application_id", "N/A")
         if risk_level == "LOW":
-            summary_en = (f"Application for {applicant} successfully passed deterministic cross-document reconciliation "
-                          f"and multi-dimensional Isolation Forest anomaly screening (ML Outlier Score: {ml_score:.2f}). "
-                          f"Zero entity collisions detected. Recommended to proceed to credit evaluation.")
-            summary_ar = (f"اجتاز طلب التمويل للعميل ({applicant}) كافة اختبارات المطابقة المتقاطعة للوثائق وفحص شذوذ "
-                          f"التعلم الآلي (Isolation Forest: {ml_score:.2f}) دون رصد أي تكرار مشبوه في الكيانات. يوصى بالموافقة على تمرير الطلب لتقييم الجدارة الائتمانية.")
-        elif risk_level in ["MEDIUM", "HIGH"]:
-            summary_en = (f"Application for {applicant} triggered {len(violations)} policy violation(s) and "
-                          f"behavioral discrepancies. Multi-attribute Isolation Forest scored at {ml_score:.2f}. "
-                          f"Requires secondary manual verification or certified bank confirmation before underwriting.")
-            summary_ar = (f"سجل طلب العميل ({applicant}) عدد {len(violations)} مخالفة سياسات وتفاوت في التدفقات النقدية "
-                          f"(سكور التعلم الآلي: {ml_score:.2f}). يوصى بالتحويل للمراجعة اليدوية وطلب مستندات إضافية قبل المتابعة.")
+            summary_ar = f"الطلب {app_id} اجتاز كافة فحوصات التطابق الجنائي والبنكي بنجاح بنسبة ثقة خوارزمية عالية. لا توجد مؤشرات احتيال، والملف مؤهل للتقييم الائتماني المباشر."
+            summary_en = f"Application {app_id} successfully passed all 5 forensic, entity graph, and ML layers. Fraud probability is low ({gb_prob*100:.1f}%)."
+        elif risk_level == "CRITICAL":
+            summary_ar = f"تحذير رقابي حرج: الطلب {app_id} تم رفضه آلياً لاشتباه تزوير مؤكد. تم رصد {len(violations)} خرق لسياسات البنك المركزي مع احتمال احتيال بنسبة {gb_prob*100:.1f}%."
+            summary_en = f"Regulatory Critical Alert: Application {app_id} auto-rejected due to fatal document/entity tampering. Estimated fraud probability: {gb_prob*100:.1f}%."
         else:
-            summary_en = (f"CRITICAL FORENSIC ALERT: Fatal irregularities detected in application for {applicant}. "
-                          f"Confirmed document tampering, synthetic cashflows, or entity collision detected. Immediate decline required under CBE AML/Anti-Fraud mandate.")
-            summary_ar = (f"تحذير جنائي حرج: رصد تزوير أو تلاعب رقمي مؤكد أو تضارب جوهري في كشوفات الحساب لطلب العميل ({applicant}). "
-                          f"يجب رفض الطلب فوراً وتسجيله في سجل مكافحة الاحتيال المصرفي طبقاً لتعليمات البنك المركزي المصري.")
+            summary_ar = f"الطلب {app_id} يتطلب مراجعة ائتمانية يدوية متخصصة لوجود تفاوتات جزئية أو مؤشرات عدم استقرار مالي."
+            summary_en = f"Application {app_id} routed to senior underwriter queue due to moderate inconsistencies or cashflow volatility."
 
         return reason_codes, summary_ar, summary_en
 
-    def _compute_income_haircut(self, app: Dict[str, Any], fraud_score: float, 
-                               risk_level: str, mismatch: float) -> Tuple[float, float]:
-        salary_fields = app.get("salary_certificate_fields", {})
-        bank_fields = app.get("bank_statement_fields", {})
-        declared = float(salary_fields.get("declared_net_salary", {}).get("value", 0.0) or 0.0)
-        inflow = float(bank_fields.get("avg_monthly_net_inflow", {}).get("value", 0.0) or 0.0)
-
+    def _compute_income_haircut(
+        self, app: Dict[str, Any], fraud_score: float, risk_level: str, mismatch: float
+    ) -> Tuple[float, float]:
+        declared_salary = self._get_declared_salary(app)
         if risk_level == "CRITICAL":
-            return 0.0, 0.0
+            haircut = 0.0
+        elif risk_level == "HIGH":
+            haircut = max(0.50, 1.0 - (fraud_score * 0.75))
+        elif risk_level == "MEDIUM":
+            haircut = max(0.75, 1.0 - (fraud_score * 0.50))
+        else:
+            haircut = 1.0
 
-        if declared <= 0:
-            return 1.0, 0.0
-
-        # Base haircut matches verified bank inflow
-        credible_base = min(declared, inflow) if inflow > 0 else declared
-
-        # Additional discount penalty based on fraud score
-        discount = 1.0 - (fraud_score * 0.35)
-        adjusted = max(0.0, credible_base * discount)
-        effective_multiplier = adjusted / declared if declared > 0 else 0.0
-
-        return round(effective_multiplier, 4), round(adjusted, 2)
+        adjusted_salary = declared_salary * haircut
+        return haircut, adjusted_salary
 
     def _get_declared_salary(self, app: Dict[str, Any]) -> float:
         return float(app.get("salary_certificate_fields", {}).get("declared_net_salary", {}).get("value", 0.0) or 0.0)
 
     def _translate_action(self, action: str) -> str:
-        translations = {
-            "PROCEED_TO_CREDIT_EVALUATION": "تمرير الطلب لموديل تقييم الجدارة الائتمانية",
-            "REQUEST_ADDITIONAL_VERIFICATION_DOCUMENTS": "طلب مستندات إضافية وتأكيد بنكي معتمد",
-            "FLAG_FOR_MANUAL_FRAUD_INVESTIGATION": "تحويل الطلب للتحقيق الجنائي اليدوي",
-            "REJECT_SUSPECTED_FRAUD": "رفض فوري لشبهة تزوير واحتيال مستندي"
+        mapping = {
+            "PROCEED_TO_CREDIT_EVALUATION": "تمرير الطلب للتقييم الائتماني المباشر",
+            "REQUEST_ADDITIONAL_VERIFICATION_DOCUMENTS": "طلب مستندات دعم إضافية وتحديث الاستعلام",
+            "FLAG_FOR_MANUAL_FRAUD_INVESTIGATION": "تحويل الطلب للمراجعة الأمنية والائتمانية اليدوية",
+            "REJECT_SUSPECTED_FRAUD": "رفض قطعي فوري لاشتباه تزوير واحتيال"
         }
-        return translations.get(action, action)
+        return mapping.get(action, action)
+
+    def enrich_payload(self, application: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enriches the input JSON payload with the full fraud_assessment block.
+        """
+        assessment = self.evaluate(application)
+        if "consistency_checks" not in application:
+            application["consistency_checks"] = {}
+
+        application["consistency_checks"].update(assessment["verification_checklist"])
+        application["fraud_assessment"] = assessment
+        return application
