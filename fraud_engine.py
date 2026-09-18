@@ -124,7 +124,8 @@ class DeepForensicAnalyzer:
                 last_digit = int(math.floor(val)) % 10
                 valid_digits.append(last_digit)
 
-        if len(valid_digits) < 10:
+        # Cochran's statistical sample criterion for 10-bin Chi-Square (expected count >= 2.5 per bin)
+        if len(valid_digits) < 25:
             return False, 0.0, 1.0
 
         n_total = len(valid_digits)
