@@ -29,6 +29,7 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 import joblib
+from scipy import stats
 
 
 # -----------------------------------------------------------------------------
@@ -176,6 +177,89 @@ class DeepForensicAnalyzer:
             return 0.0
         round_count = sum(1 for a in clean_amounts if a % 1000 == 0 or a % 500 == 0)
         return round(round_count / len(clean_amounts), 3)
+
+    @staticmethod
+    def evaluate_second_order_adversarial_signals(numbers: List[float]) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Anti-Adversarial Countermeasure Layer (targets forgers sophisticated enough
+        to defeat the basic first-digit Benford's Law screen above).
+
+        A forger who deliberately samples leading digits from the Benford
+        distribution to pass evaluate_benford_law() typically still fails one or
+        more of these three deeper, harder-to-simultaneously-satisfy signals:
+
+          1. Second-Digit Benford Conformity: real financial data also follows a
+             known (flatter) frequency law on the SECOND digit. Naive first-digit
+             -only fabrication rarely reproduces this correctly.
+          2. Log-Mantissa Uniformity (Kolmogorov-Smirnov test): Benford's Law is
+             mathematically equivalent to the fractional part of log10(amount)
+             being uniformly distributed on [0,1). This is a continuous,
+             higher-resolution test than the coarse 9-bucket chi-square above,
+             and can catch fabrication that only "roughly" matches leading-digit
+             frequencies.
+          3. Recurring-Transaction Absence: genuine personal bank statements
+             almost always contain a handful of near-identical repeated amounts
+             (rent, subscriptions, recurring transfers). A fabricator drawing
+             each amount independently at random produces unnaturally "too
+             random" data with essentially no repeats.
+
+        Returns: (is_suspicious, detail_dict). Requires >= 20 usable amounts;
+        returns (False, {"applicable": False}) otherwise (conservative -- never
+        penalizes a thin transaction history).
+        """
+        amounts = [abs(float(n)) for n in numbers if n and abs(float(n)) >= 1.0]
+        if len(amounts) < 20:
+            return False, {"applicable": False}
+
+        # --- 1. Second-digit Benford chi-square (standard forensic-accounting law) ---
+        SECOND_DIGIT_EXPECTED = [0.1197, 0.1139, 0.1088, 0.1043, 0.1003,
+                                  0.0967, 0.0934, 0.0904, 0.0876, 0.0850]
+        second_digits = []
+        for a in amounts:
+            digits_only = str(int(a)).lstrip("0")
+            if len(digits_only) >= 2:
+                second_digits.append(int(digits_only[1]))
+
+        second_digit_anomaly = False
+        sd_chi = 0.0
+        if len(second_digits) >= 20:
+            n = len(second_digits)
+            observed = [second_digits.count(d) for d in range(10)]
+            expected = [p * n for p in SECOND_DIGIT_EXPECTED]
+            sd_chi = sum(((o - e) ** 2) / e for o, e in zip(observed, expected) if e > 0)
+            second_digit_anomaly = sd_chi > 16.92  # chi2 critical value, df=9, p=0.05
+
+        # --- 2. Log-mantissa uniformity (finer-grained than the leading-digit bucket test) ---
+        mantissa_anomaly = False
+        ks_p = 1.0
+        try:
+            mantissas = [math.log10(a) % 1.0 for a in amounts]
+            _, ks_p = stats.kstest(mantissas, "uniform")
+            mantissa_anomaly = bool(ks_p < 0.05)
+        except (ValueError, ZeroDivisionError):
+            pass
+
+        # --- 3. Recurring / near-duplicate transaction absence ---
+        near_dup_count = 0
+        for i, a in enumerate(amounts):
+            for b in amounts[i + 1:]:
+                if a > 0 and abs(a - b) / a <= 0.01:
+                    near_dup_count += 1
+                    break
+        recurrence_ratio = near_dup_count / len(amounts)
+        recurrence_absent = bool(recurrence_ratio < 0.05)
+
+        is_suspicious = bool(second_digit_anomaly or mantissa_anomaly or recurrence_absent)
+        detail = {
+            "applicable": True,
+            "second_digit_chi_square": round(sd_chi, 2),
+            "second_digit_anomaly": second_digit_anomaly,
+            "mantissa_ks_pvalue": round(float(ks_p), 4),
+            "mantissa_anomaly": mantissa_anomaly,
+            "recurrence_ratio": round(recurrence_ratio, 3),
+            "recurrence_absent": recurrence_absent,
+        }
+        return is_suspicious, detail
 
 
 # -----------------------------------------------------------------------------
@@ -540,7 +624,7 @@ class CreditFraudEngine:
         # ---------------------------------------------------------------------
         # LAYER 2: Deep Forensic & Anti-Adversarial Signals
         # ---------------------------------------------------------------------
-        anomaly_signals, uniformity_score, benford_anomaly, terminal_digit_anomaly = self._detect_behavioral_and_forensic_anomalies(
+        anomaly_signals, uniformity_score, benford_anomaly, terminal_digit_anomaly, adversarial_second_order_anomaly = self._detect_behavioral_and_forensic_anomalies(
             application, income_mismatch
         )
 
@@ -630,6 +714,7 @@ class CreditFraudEngine:
                 "inflow_uniformity_score": round(uniformity_score, 4),
                 "benford_law_violation": bool(benford_anomaly),
                 "terminal_digit_violation": bool(terminal_digit_anomaly),
+                "adversarial_second_order_signal": bool(adversarial_second_order_anomaly),
                 "isolation_forest_anomaly_score": round(iso_score, 4),
                 "gradient_boost_fraud_probability": round(gb_prob, 4),
                 "entity_collisions_count": collisions.get("total_collisions", 0),
@@ -927,7 +1012,7 @@ class CreditFraudEngine:
 
     def _detect_behavioral_and_forensic_anomalies(
         self, app: Dict[str, Any], income_mismatch: float
-    ) -> Tuple[List[AnomalySignal], float, bool, bool]:
+    ) -> Tuple[List[AnomalySignal], float, bool, bool, bool]:
         signals = []
         bank_fields = app.get("bank_statement_fields", {})
         form_data = app.get("form_data", {})
@@ -1036,7 +1121,40 @@ class CreditFraudEngine:
                     explanation_ar=f"غياب ضوضاء الحياة اليومية ومصروفات الاحتكاك العادية ({micro_ratio*100:.1f}% فقط معاملات صغيرة). كشف الحساب يحتوي فقط على مبالغ كبرى مصطنعة."
                 ))
 
-        # 7. Adversarial Threshold-Gaming Detector
+        # 7. Second-Order Adversarial Forensic Signals (Benford-Evasion Countermeasure)
+        adversarial_second_order_anomaly = False
+        if sample_transactions and len(sample_transactions) >= 20:
+            adv_flag, adv_detail = DeepForensicAnalyzer.evaluate_second_order_adversarial_signals(sample_transactions)
+            if adv_flag:
+                adversarial_second_order_anomaly = True
+                reasons_en, reasons_ar = [], []
+                if adv_detail.get("second_digit_anomaly"):
+                    reasons_en.append(f"second-digit Benford violation (χ²={adv_detail['second_digit_chi_square']})")
+                    reasons_ar.append(f"انتهاك قانون بنفورد للرقم الثاني (كاي²={adv_detail['second_digit_chi_square']})")
+                if adv_detail.get("mantissa_anomaly"):
+                    reasons_en.append(f"log-mantissa non-uniformity (KS p={adv_detail['mantissa_ks_pvalue']})")
+                    reasons_ar.append(f"عدم انتظام في التوزيع اللوغاريتمي الدقيق (KS p={adv_detail['mantissa_ks_pvalue']})")
+                if adv_detail.get("recurrence_absent"):
+                    reasons_en.append(f"no recurring/near-duplicate transactions ({adv_detail['recurrence_ratio']*100:.1f}% only)")
+                    reasons_ar.append(f"غياب معاملات متكررة أو شبه متطابقة ({adv_detail['recurrence_ratio']*100:.1f}% فقط)")
+
+                signals.append(AnomalySignal(
+                    anomaly_name="ADVERSARIAL_BENFORD_EVASION_SECOND_ORDER_SIGNAL",
+                    anomaly_score=0.70,
+                    detected=True,
+                    explanation_en=(
+                        "Transaction set passes the basic first-digit Benford screen but fails deeper "
+                        f"forensic checks: {'; '.join(reasons_en)}. Consistent with a sophisticated forger "
+                        "deliberately engineering statement data to defeat naive fraud screening."
+                    ),
+                    explanation_ar=(
+                        "كشف الحساب يجتاز الفحص الأساسي لقانون بنفورد (الرقم الأول) لكنه يفشل في فحوصات "
+                        f"جنائية أعمق: {'; '.join(reasons_ar)}. مؤشر على محتال متمرس يصمم بيانات الكشف "
+                        "عمداً لتفادي أدوات الكشف السطحية."
+                    )
+                ))
+
+        # 8. Adversarial Threshold-Gaming Detector
         is_gaming, gaming_score, gaming_reasons = self._evaluate_threshold_gaming(app, income_mismatch)
         if is_gaming:
             signals.append(AnomalySignal(
@@ -1047,7 +1165,7 @@ class CreditFraudEngine:
                 explanation_ar=f"رصد محاولة تحايل استراتيجي وضبط الأرقام عمداً تحت أسقف الرفض مباشرة: {'; '.join(gaming_reasons)}."
             ))
 
-        return signals, uniformity_score, benford_anomaly, terminal_digit_anomaly
+        return signals, uniformity_score, benford_anomaly, terminal_digit_anomaly, adversarial_second_order_anomaly
 
     def _evaluate_threshold_gaming(
         self, application: Dict[str, Any], income_mismatch: float
