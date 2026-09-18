@@ -5,9 +5,9 @@ Platform: Smart Financing & Credit Request Analysis Platform (ZAWOLF / CrediX)
 Standard: Egyptian Banking Federation & CBE Regulatory Compliance Guidelines
 
 Architecture:
-  - Layer 1: Deterministic Cross-Document Rules (NID, Salary slip vs Statement, Employer, OCR, Bureau)
+  - Layer 1: Deterministic Cross-Document Rules (NID, Salary vs Statement, OCR, Bureau, Device Telemetry)
   - Layer 2: Deep Forensic Signals (Benford's Law Chi-Square test, Inflow Uniformity)
-  - Layer 3: SQLite Entity Collision & Velocity Defense (Cross-application 48h tracking)
+  - Layer 3: SQLite Entity Collision & Velocity Defense (Cross-application 48h tracking for Phone, Account, Device)
   - Layer 4: Dual-Engine ML Inference (Multi-Tree Isolation Forest + Cost-Sensitive Gradient Boosting)
   - Layer 5: Cost-Sensitive Hybrid Fusion, Bilingual Explainable AI (XAI) & Income Haircut Calculator
 
@@ -75,10 +75,6 @@ class DeepForensicAnalyzer:
 
     @staticmethod
     def evaluate_benford_law(numbers: List[float]) -> Tuple[bool, float, float]:
-        """
-        Tests if transaction lead digits conform to Benford's Law.
-        Returns: (is_anomaly, chi_square_stat, p_value_approx)
-        """
         valid_digits = []
         for n in numbers:
             val = abs(float(n or 0))
@@ -101,16 +97,11 @@ class DeepForensicAnalyzer:
             observed = observed_counts[d]
             chi_square += ((observed - expected) ** 2) / max(expected, 0.001)
 
-        # Critical chi-square at df=8, p=0.05 is 15.51
         is_anomaly = bool(chi_square > 15.51)
         return is_anomaly, round(chi_square, 2), 0.02 if is_anomaly else 0.85
 
     @staticmethod
     def calculate_inflow_uniformity(amounts: List[float]) -> float:
-        """
-        Calculates ratio of highly rounded inflow numbers (e.g. 1000, 5000, 10000).
-        Forged statements typically use round numbers rather than real-world messy sums.
-        """
         if not amounts:
             return 0.0
         clean_amounts = [abs(float(a)) for a in amounts if abs(float(a)) > 100]
@@ -127,7 +118,7 @@ class DeepForensicAnalyzer:
 class SQLiteEntityStore:
     """
     Lightweight, embedded cross-application registry to detect fraud ring velocity
-    and entity collisions (phone, NID, employer, IBAN) across a rolling 48-hour window.
+    and entity collisions (phone, NID, employer, IBAN, device) across a rolling 48-hour window.
     """
 
     def __init__(self, db_path: Optional[str] = None):
@@ -149,7 +140,8 @@ class SQLiteEntityStore:
                         nid_hash TEXT,
                         phone_hash TEXT,
                         employer_name TEXT,
-                        bank_account_hash TEXT
+                        bank_account_hash TEXT,
+                        device_id_hash TEXT
                     )
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_time ON entity_audit_log(timestamp)")
@@ -158,21 +150,20 @@ class SQLiteEntityStore:
             pass
 
     def check_and_record_velocity(
-        self, application_id: str, national_id: str, phone: str, employer: str, account: str
+        self, application_id: str, national_id: str, phone: str, employer: str, account: str, device_id: str = ""
     ) -> Dict[str, Any]:
-        """
-        Checks if entity identifiers have collided in >2 applications within 48 hours.
-        """
         now = datetime.utcnow()
         window_start = (now - timedelta(hours=48)).isoformat()
         nid_h = hashlib.sha256((national_id or "").strip().encode()).hexdigest() if national_id else ""
         ph_h = hashlib.sha256((phone or "").strip().encode()).hexdigest() if phone else ""
         acc_h = hashlib.sha256((account or "").strip().encode()).hexdigest() if account else ""
+        dev_h = hashlib.sha256((device_id or "").strip().encode()).hexdigest() if device_id else ""
         emp_clean = (employer or "").strip().lower()
 
         collisions = {
             "duplicate_phone_in_48h": False,
             "duplicate_account_in_48h": False,
+            "duplicate_device_in_48h": False,
             "employer_spike_in_48h": False,
             "total_collisions": 0
         }
@@ -200,10 +191,19 @@ class SQLiteEntityStore:
                         collisions["duplicate_account_in_48h"] = True
                         collisions["total_collisions"] += count_acc
 
-                # Record current transaction
+                if dev_h:
+                    cursor.execute(
+                        "SELECT COUNT(DISTINCT application_id) FROM entity_audit_log WHERE device_id_hash = ? AND timestamp >= ? AND application_id != ?",
+                        (dev_h, window_start, application_id)
+                    )
+                    count_dev = cursor.fetchone()[0]
+                    if count_dev >= 2:
+                        collisions["duplicate_device_in_48h"] = True
+                        collisions["total_collisions"] += count_dev
+
                 cursor.execute(
-                    "INSERT INTO entity_audit_log (application_id, timestamp, nid_hash, phone_hash, employer_name, bank_account_hash) VALUES (?, ?, ?, ?, ?, ?)",
-                    (application_id, now.isoformat(), nid_h, ph_h, emp_clean, acc_h)
+                    "INSERT INTO entity_audit_log (application_id, timestamp, nid_hash, phone_hash, employer_name, bank_account_hash, device_id_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (application_id, now.isoformat(), nid_h, ph_h, emp_clean, acc_h, dev_h)
                 )
                 conn.commit()
         except Exception:
@@ -211,18 +211,38 @@ class SQLiteEntityStore:
 
         return collisions
 
+    def get_recent_graph_data(self, limit: int = 25) -> List[Dict[str, Any]]:
+        """Returns recent entity submissions for graph network rendering."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT application_id, timestamp, phone_hash, employer_name, bank_account_hash, device_id_hash
+                    FROM entity_audit_log
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (limit,))
+                rows = cursor.fetchall()
+                data = []
+                for r in rows:
+                    data.append({
+                        "app_id": r[0],
+                        "timestamp": r[1],
+                        "phone_masked": f"PH-{r[2][:6]}" if r[2] else "",
+                        "employer": r[3] if r[3] else "",
+                        "account_masked": f"ACC-{r[4][:6]}" if r[4] else "",
+                        "device_masked": f"DEV-{r[5][:6]}" if r[5] else ""
+                    })
+                return data
+        except Exception:
+            return []
+
 
 # -----------------------------------------------------------------------------
 # Layer 4 Helper: Persistent Model Manager (Pre-trained ML Inference)
 # -----------------------------------------------------------------------------
 
 class PersistentModelManager:
-    """
-    Loads pre-trained production model weights (Isolation Forest + HistGradientBoosting)
-    and executes fast vectorized scoring (<5ms per application).
-    Never retrains at runtime.
-    """
-
     FEATURE_NAMES = [
         'income_mismatch_ratio', 'annuity_to_balance_ratio', 'balance_volatility_cv',
         'surge_ratio_max_to_avg', 'ocr_quality_mean', 'min_to_avg_balance_ratio',
@@ -260,7 +280,6 @@ class PersistentModelManager:
             self._fallback_init()
 
     def _fallback_init(self):
-        """Safe heuristic fallback if model artifacts are not yet saved to disk."""
         from sklearn.ensemble import IsolationForest
         from sklearn.preprocessing import StandardScaler
         np.random.seed(42)
@@ -271,18 +290,12 @@ class PersistentModelManager:
         self.is_loaded = False
 
     def predict_scores(self, feature_vector: np.ndarray) -> Tuple[float, float, bool]:
-        """
-        Executes inference on 12-dimensional feature vector.
-        Returns: (isolation_forest_score, gradient_boost_prob, is_anomaly)
-        """
         try:
             scaled = self.scaler.transform(feature_vector)
-            # Isolation Forest anomaly score [0.0, 1.0]
             raw_iso = self.iso_model.decision_function(scaled)[0]
             iso_score = float(np.clip(0.50 - (raw_iso * 1.8), 0.0, 1.0))
             is_anomaly = bool(iso_score > 0.60)
 
-            # Gradient Boosting probability [0.0, 1.0]
             if self.gb_model is not None:
                 gb_prob = float(self.gb_model.predict_proba(scaled)[0, 1])
             else:
@@ -298,10 +311,6 @@ class PersistentModelManager:
 # -----------------------------------------------------------------------------
 
 class HighDimensionalFraudVectorizer:
-    """
-    Transforms raw application JSON payload into canonical 12-dimensional feature vector.
-    """
-
     @staticmethod
     def extract_features(app: Dict[str, Any], mismatch_ratio: float, uniformity_score: float) -> np.ndarray:
         bank_fields = app.get("bank_statement_fields", {})
@@ -321,12 +330,10 @@ class HighDimensionalFraudVectorizer:
         iscore = float(iscore_fields.get("credit_score", {}).get("value", 650) or 650)
         facilities = float(iscore_fields.get("active_facilities_count", {}).get("value", 2) or 2)
 
-        # Calculate OCR mean across all attached documents
         docs = app.get("documents", [])
         ocr_scores = [float(d.get("overall_quality_score", 0.85)) for d in docs if isinstance(d, dict)]
         ocr_mean = float(np.mean(ocr_scores)) if ocr_scores else 0.88
 
-        # 12 Normalized Features matching training matrix:
         feat = [
             float(np.clip(mismatch_ratio, 0.0, 2.0)),
             float(np.clip(annuity / avg_balance, 0.0, 5.0)),
@@ -349,12 +356,6 @@ class HighDimensionalFraudVectorizer:
 # -----------------------------------------------------------------------------
 
 class CreditFraudEngine:
-    """
-    Senior / Production-Grade Hybrid 5-Layer Fraud Prevention & Consistency Engine.
-    Executes fast inference, cross-document deterministic checks, entity graph defense,
-    deep mathematical forensics, and bilingual CBE-compliant explainability.
-    """
-
     SEVERITY_WEIGHTS = {
         "LOW": 0.10,
         "MEDIUM": 0.25,
@@ -362,7 +363,6 @@ class CreditFraudEngine:
         "CRITICAL": 0.90
     }
 
-    # Thresholds
     INCOME_MISMATCH_WARN = 0.20
     INCOME_MISMATCH_CRITICAL = 0.40
     EMPLOYER_SIMILARITY_MIN = 0.65
@@ -378,15 +378,11 @@ class CreditFraudEngine:
         self.model_manager = PersistentModelManager(artifact_dir)
 
     def evaluate(self, application: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Executes end-to-end 5-layer evaluation on the application JSON payload.
-        Zero training takes place inside this method; inference only.
-        """
         violations: List[FraudRuleViolation] = []
         checks_passed: Dict[str, bool] = {}
 
         # ---------------------------------------------------------------------
-        # LAYER 1: Deterministic Cross-Document Consistency
+        # LAYER 1: Deterministic Cross-Document & Digital Telemetry Checks
         # ---------------------------------------------------------------------
         nid_ok, nid_v = self._verify_identity(application)
         checks_passed["identity_verified"] = nid_ok
@@ -411,6 +407,11 @@ class CreditFraudEngine:
         bank_ok, bank_v = self._verify_banking_behavior(application)
         checks_passed["bank_statement_math_verified"] = bank_ok
         violations.extend(bank_v)
+
+        # Digital Telemetry & Device Verification
+        telemetry_ok, tel_v = self._verify_device_telemetry(application)
+        checks_passed["device_telemetry_verified"] = telemetry_ok
+        violations.extend(tel_v)
 
         # ---------------------------------------------------------------------
         # LAYER 2: Deep Forensic Signals (Benford's Law & Cashflow Uniformity)
@@ -446,6 +447,19 @@ class CreditFraudEngine:
                 description_ar="رقم الحساب البنكي المستخدم مسجل مسبقاً باسم عميل آخر في قاعدة البيانات.",
                 observed_value=True,
                 threshold_value=False,
+                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+            ))
+
+        if collisions.get("duplicate_device_in_48h"):
+            violations.append(FraudRuleViolation(
+                rule_code="VEL-003-DEVICE-FINGERPRINT-COLLISION",
+                rule_name_en="Device Fingerprint Fraud Ring Collision",
+                rule_name_ar="تقديم طلبات متعددة لعملاء مختلفين من نفس الجهاز الفعلي",
+                severity="CRITICAL",
+                description_en="Hardware device fingerprint was used to submit multiple distinct credit requests within 48h (Syndicate Terminal).",
+                description_ar="تم رصد استخدام نفس بصمة الجهاز الفعلي لتقديم طلبات ائتمانية لعملاء مختلفين خلال 48 ساعة.",
+                observed_value=collisions["total_collisions"],
+                threshold_value="< 2 applications / device",
                 weight=self.SEVERITY_WEIGHTS["CRITICAL"]
             ))
 
@@ -517,6 +531,42 @@ class CreditFraudEngine:
     # -------------------------------------------------------------------------
     # Layer 1 Rule Methods
     # -------------------------------------------------------------------------
+
+    def _verify_device_telemetry(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
+        violations = []
+        telemetry = app.get("device_telemetry", {})
+        if not telemetry:
+            return True, []
+
+        is_vpn = bool(telemetry.get("is_vpn_or_proxy", False))
+        if is_vpn:
+            violations.append(FraudRuleViolation(
+                rule_code="TEL-001-VPN-PROXY-ANONYMIZER",
+                rule_name_en="Anonymous Proxy / Commercial VPN Detected",
+                rule_name_ar="استخدام شبكة افتراضية خاصة (VPN) أو بروكسي لإخفاء الهوية الرقمية",
+                severity="HIGH",
+                description_en="Submission originated from a commercial VPN/datacenter IP address rather than a residential Egyptian ISP.",
+                description_ar="طلب الائتمان تم إرساله عبر خادم VPN أو مركز بيانات تجاري لإخفاء الموقع الجغرافي الحقيقي للمتقدم.",
+                observed_value="VPN = TRUE",
+                threshold_value="VPN = FALSE",
+                weight=self.SEVERITY_WEIGHTS["HIGH"]
+            ))
+
+        submission_hour = telemetry.get("submission_hour_utc")
+        if submission_hour is not None and (1 <= int(submission_hour) <= 4):
+            violations.append(FraudRuleViolation(
+                rule_code="TEL-002-OFF-HOURS-SUBMISSION",
+                rule_name_en="Anomalous Off-Hours Automated Submission",
+                rule_name_ar="تقديم طلب آلي في ساعات الفجر المتأخرة",
+                severity="LOW",
+                description_en="Application was submitted between 01:00 AM and 04:00 AM, common pattern in batch automated bot applications.",
+                description_ar="تم تسجيل الطلب في ساعات متأخرة جداً فجراً، وهو نمط متكرر في هجمات التقديم الآلي.",
+                observed_value=f"Hour: {submission_hour} UTC",
+                threshold_value="Standard Hours",
+                weight=self.SEVERITY_WEIGHTS["LOW"]
+            ))
+
+        return len(violations) == 0, violations
 
     def _verify_identity(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
         violations = []
@@ -749,7 +799,6 @@ class CreditFraudEngine:
         regularity = float(bank_fields.get("income_regularity_score", {}).get("value", 1.0) or 1.0)
         requested_annuity = float(form_data.get("requested_annuity", 0.0) or 0.0)
 
-        # 1. Window Dressing
         is_window_dressed = False
         surge_ratio = 1.0
         if avg_balance > 0:
@@ -765,7 +814,6 @@ class CreditFraudEngine:
             explanation_ar=f"أعلى رصيد ({max_balance:,.0f} ج.م) يتجاوز {surge_ratio:.1f} أضعاف المتوسط الشهري مع فراغ الحساب، مؤشر على اقتراض مؤقت لتجميل كشف الحساب."
         ))
 
-        # 2. Volatility
         is_volatile = False
         if avg_balance > 0 and (volatility / avg_balance) > 1.20 and regularity < 0.60:
             is_volatile = True
@@ -778,7 +826,6 @@ class CreditFraudEngine:
             explanation_ar=f"تذبذب شديد في السيولة (انحراف معياري {volatility:,.0f} ج.م) مع ضعف انتظام مواعيد نزول المرتب ({regularity*100:.0f}%)."
         ))
 
-        # 3. Annuity Stress
         is_annuity_stress = False
         if avg_balance > 0 and requested_annuity > 0:
             buffer_ratio = requested_annuity / avg_balance
@@ -793,7 +840,6 @@ class CreditFraudEngine:
             explanation_ar=f"القسط الشهري المطلوب ({requested_annuity:,.0f} ج.م) يستنزف أكثر من 60% من متوسط رصيد العميل السائل تاريخياً."
         ))
 
-        # 4. Mathematical Forensics: Benford's Law on transaction amounts (if itemized transactions provided)
         sample_transactions = bank_fields.get("sample_transaction_amounts", {}).get("value", [])
         if sample_transactions and len(sample_transactions) >= 4:
             benford_anomaly, chi_stat, _ = DeepForensicAnalyzer.evaluate_benford_law(sample_transactions)
@@ -833,8 +879,9 @@ class CreditFraudEngine:
         phone = app.get("form_data", {}).get("mobile_phone", "")
         employer = app.get("salary_certificate_fields", {}).get("employer_name", {}).get("value", "")
         account = app.get("bank_statement_fields", {}).get("bank_account_number", {}).get("value", "")
+        device_id = app.get("device_telemetry", {}).get("device_id", "")
 
-        return self.entity_store.check_and_record_velocity(app_id, nid, phone, employer, account)
+        return self.entity_store.check_and_record_velocity(app_id, nid, phone, employer, account, device_id)
 
     # -------------------------------------------------------------------------
     # Layer 5 Decision & Hybrid Fusion
@@ -854,10 +901,7 @@ class CreditFraudEngine:
         detected_anoms = [a for a in anomalies if a.detected]
         anomaly_score = sum(a.anomaly_score * 0.20 for a in detected_anoms)
 
-        # ML Ensemble Score (35% Isolation Forest + 65% Gradient Boost)
         ml_score = (0.35 * iso_score) + (0.65 * gb_prob)
-
-        # Total Aggregation: 50% Deterministic Rules + 20% Forensic Anomalies + 30% Dual-Engine ML
         base_score = (0.50 * rule_score) + (0.20 * anomaly_score) + (0.30 * ml_score)
         total_score = float(np.clip(base_score, 0.0, 1.0))
 
@@ -910,11 +954,11 @@ class CreditFraudEngine:
 
         app_id = app.get("application_id", "N/A")
         if risk_level == "LOW":
-            summary_ar = f"الطلب {app_id} اجتاز كافة فحوصات التطابق الجنائي والبنكي بنجاح بنسبة ثقة خوارزمية عالية. لا توجد مؤشرات احتيال، والملف مؤهل للتقييم الائتماني المباشر."
-            summary_en = f"Application {app_id} successfully passed all 5 forensic, entity graph, and ML layers. Fraud probability is low ({gb_prob*100:.1f}%)."
+            summary_ar = f"الطلب {app_id} اجتاز كافة فحوصات التطابق الجنائي والبنكي والتحقق الرقمي بنجاح. لا توجد مؤشرات احتيال، والملف مؤهل للتقييم الائتماني المباشر."
+            summary_en = f"Application {app_id} successfully passed all 5 forensic, entity graph, digital telemetry, and ML layers. Fraud probability is low ({gb_prob*100:.1f}%)."
         elif risk_level == "CRITICAL":
-            summary_ar = f"تحذير رقابي حرج: الطلب {app_id} تم رفضه آلياً لاشتباه تزوير مؤكد. تم رصد {len(violations)} خرق لسياسات البنك المركزي مع احتمال احتيال بنسبة {gb_prob*100:.1f}%."
-            summary_en = f"Regulatory Critical Alert: Application {app_id} auto-rejected due to fatal document/entity tampering. Estimated fraud probability: {gb_prob*100:.1f}%."
+            summary_ar = f"تحذير رقابي حرج: الطلب {app_id} تم رفضه آلياً لاشتباه تزوير مؤكد أو تكرار بالشبكة. تم رصد {len(violations)} خرق لسياسات البنك المركزي مع احتمال احتيال بنسبة {gb_prob*100:.1f}%."
+            summary_en = f"Regulatory Critical Alert: Application {app_id} auto-rejected due to fatal document/entity/device tampering. Estimated fraud probability: {gb_prob*100:.1f}%."
         else:
             summary_ar = f"الطلب {app_id} يتطلب مراجعة ائتمانية يدوية متخصصة لوجود تفاوتات جزئية أو مؤشرات عدم استقرار مالي."
             summary_en = f"Application {app_id} routed to senior underwriter queue due to moderate inconsistencies or cashflow volatility."
@@ -950,9 +994,6 @@ class CreditFraudEngine:
         return mapping.get(action, action)
 
     def enrich_payload(self, application: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Enriches the input JSON payload with the full fraud_assessment block.
-        """
         assessment = self.evaluate(application)
         if "consistency_checks" not in application:
             application["consistency_checks"] = {}
