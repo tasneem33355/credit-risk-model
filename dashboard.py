@@ -163,7 +163,11 @@ if payload is None:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🌐 Digital Telemetry Simulator")
 sim_vpn = st.sidebar.checkbox("Simulate Commercial VPN / Proxy IP", value=False)
-sim_device_id = st.sidebar.text_input("Device Hardware ID", value=payload.get("device_telemetry", {}).get("device_fingerprint_id", "DEV-WIN11-MAC-9872"))
+_default_device_id = payload.get("device_telemetry", {}).get(
+    "device_fingerprint_id", f"DEV-DEFAULT-{payload.get('application_id', 'UNKNOWN')}"
+)
+sim_device_id = st.sidebar.text_input("Device Hardware ID", value=_default_device_id)
+st.sidebar.caption("⚠️ Manually reusing the same Device Hardware ID across different applications will correctly trigger a Fraud Ring velocity alert (Layer 3). Leave the auto-filled default as-is to test each case in isolation.")
 sim_off_hours = st.sidebar.selectbox("Application Submission Hour", options=[12, 14, 18, 3, 4], format_func=lambda h: f"{h:02d}:00 {'(Off-hours/Dawn Flag)' if 2<=h<=5 else '(Normal business)'}")
 
 # Inject simulated telemetry into payload
@@ -287,6 +291,8 @@ with tab1:
         st.write("🏛️ **I-Score Bureau Inquiry:**", "✅ Fresh & Active" if bur_ok else "❌ Stale / Legal Action")
         dev_ok = assessment["verification_checklist"].get("device_telemetry_verified", True)
         st.write("🌐 **Device & Network Security:**", "✅ Authentic" if dev_ok else "⚠️ Security Flag")
+        vel_ok = assessment["metrics"].get("entity_collisions_count", 0) == 0
+        st.write("🕸️ **Cross-Application Velocity:**", "✅ No Collisions" if vel_ok else "🚨 Fraud Ring Signal Detected")
 
 # -----------------------------------------------------------------------------
 # TAB 2: Forensic Audit & CBE Reason Codes
