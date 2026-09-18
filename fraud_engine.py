@@ -259,7 +259,7 @@ class SQLiteEntityStore:
                         (acc_h, window_start, application_id)
                     )
                     count_acc = cursor.fetchone()[0]
-                    if count_acc >= 1:
+                    if count_acc >= 2:
                         collisions["duplicate_account_in_48h"] = True
                         collisions["total_collisions"] += count_acc
 
@@ -567,10 +567,10 @@ class CreditFraudEngine:
                 rule_name_en="Bank Account Multiple Identity Reuse",
                 rule_name_ar="استخدام الحساب البنكي لأكثر من عميل مختلف",
                 severity="CRITICAL",
-                description_en="The provided bank statement account number is associated with another borrower in the registry.",
-                description_ar="رقم الحساب البنكي المستخدم مسجل مسبقاً باسم عميل آخر في قاعدة البيانات.",
-                observed_value=True,
-                threshold_value=False,
+                description_en="The provided bank statement account number is associated with 2 or more other distinct borrowers in the registry within 48h (a single co-occurrence, e.g. a legitimate joint/family account, is tolerated).",
+                description_ar="رقم الحساب البنكي المستخدم مرتبط بعميلين مختلفين آخرين على الأقل خلال 48 ساعة (استخدام واحد سابق فقط، مثل حساب أسري مشترك، لا يُعتبر مخالفة).",
+                observed_value=collisions["total_collisions"],
+                threshold_value="< 2 applications / 48h",
                 weight=self.SEVERITY_WEIGHTS["CRITICAL"]
             ))
 
@@ -860,12 +860,12 @@ class CreditFraudEngine:
                 rule_code="BNK-002-STATEMENT-ARITHMETIC-ANOMALY",
                 rule_name_en="Bank Statement Running Balance Math Error",
                 rule_name_ar="خلل في العمليات الحسابية للأرصدة المتتالية بكشف الحساب",
-                severity="CRITICAL",
-                description_en="Cumulative transactions do not reconcile with ending balances. Strong indicator of forged statement.",
-                description_ar="تسلسل العمليات الحسابية لا يتطابق مع رصيد الإقفال، مؤشر قوي على التعديل اليدوي والتزوير.",
+                severity="HIGH",
+                description_en="Cumulative transactions do not reconcile with ending balances. Indicator of forged statement OR an upstream OCR/parsing error -- routed to manual review rather than auto-rejection pending confirmation.",
+                description_ar="تسلسل العمليات الحسابية لا يتطابق مع رصيد الإقفال. مؤشر محتمل على التزوير أو خطأ في معالجة المستند، لذا يُحال لمراجعة يدوية بدل الرفض الفوري لحين التأكد.",
                 observed_value=False,
                 threshold_value=True,
-                weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+                weight=self.SEVERITY_WEIGHTS["HIGH"]
             ))
 
         return len(violations) == 0, violations
