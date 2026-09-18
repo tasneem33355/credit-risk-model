@@ -25,6 +25,7 @@ sys.path.insert(0, BASE_DIR)
 
 from fraud_engine import CreditFraudEngine
 from adapter import adapt_application_to_model_inputs
+from model.drift_monitor import PopulationDriftMonitor, FEATURE_NAMES
 
 # Page configuration
 st.set_page_config(
@@ -115,12 +116,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize Fraud Engine
+# Initialize Fraud Engine & Drift Monitor with resource caching
 @st.cache_resource
 def get_fraud_engine():
     return CreditFraudEngine()
 
+@st.cache_resource
+def get_drift_monitor():
+    return PopulationDriftMonitor()
+
 engine = get_fraud_engine()
+drift_monitor = get_drift_monitor()
 
 # -----------------------------------------------------------------------------
 # Sidebar: Case Selection & Telemetry Simulator
@@ -285,7 +291,7 @@ with tab1:
         emp_ok = assessment["verification_checklist"].get("employer_verified", True)
         st.write("🏢 **Employer Entity Match:**", "✅ Matched" if emp_ok else "❌ Entity Discrepancy")
         doc_ok = assessment["verification_checklist"].get("document_integrity_verified", True)
-        st.write("📑 **Document Digital Integrity:**", "✅ Authentic" if doc_ok else "❌ Tampering Suspected")
+        st.write("📄 **Document Digital Integrity:**", "✅ Authentic" if doc_ok else "❌ Tampering Suspected")
     with c3:
         bur_ok = assessment["verification_checklist"].get("bureau_verified", True)
         st.write("🏛️ **I-Score Bureau Inquiry:**", "✅ Fresh & Active" if bur_ok else "❌ Stale / Legal Action")
@@ -680,35 +686,227 @@ with tab4:
         st.bar_chart(seg_chart)
 
 # -----------------------------------------------------------------------------
-# TAB 5: Model Drift & PSI Governance
+# TAB 5: Model Drift & PSI Governance (Fully Dynamic Mathematical Engine)
 # -----------------------------------------------------------------------------
 with tab5:
-    st.subheader("📊 Population Stability Index (PSI) & Model Drift Governance")
-    st.write("Evaluating live applicant distributions against the baseline 25,000 synthetic banking population (CBE Model Risk Management):")
+    st.subheader("📊 Population Stability Index (PSI) & Dynamic Model Drift Governance")
+    st.caption("Compliance Framework: Central Bank of Egypt (CBE) Model Risk Management & Basel Committee Drift Policy")
 
-    # Dynamic PSI drift table
-    psi_metrics = [
-        {"Feature": "Income Mismatch Ratio", "Baseline Mean": "11.2%", "Live Observed": f"{mismatch:.1f}%", "PSI": 0.021, "Status": "STABLE"},
-        {"Feature": "Annuity to Balance Ratio", "Baseline Mean": "0.34", "Live Observed": f"{(annuity/max(raw_salary,1)):.2f}", "PSI": 0.038, "Status": "STABLE"},
-        {"Feature": "I-Score Credit Score", "Baseline Mean": "664", "Live Observed": f"{iscore_score:.0f}", "PSI": 0.015, "Status": "STABLE"},
-        {"Feature": "OCR Quality Score", "Baseline Mean": "0.91", "Live Observed": "0.94", "PSI": 0.009, "Status": "STABLE"},
-        {"Feature": "Inflow Uniformity Score", "Baseline Mean": "0.14", "Live Observed": f"{assessment['metrics'].get('inflow_uniformity_score', 0):.2f}", "PSI": 0.018, "Status": "STABLE"}
-    ]
-    
-    psi_df = pd.DataFrame(psi_metrics)
-    
-    p1, p2 = st.columns(2)
-    with p1:
-        max_psi = max(m["PSI"] for m in psi_metrics)
-        st.metric("Aggregate Population Drift (Max PSI)", f"{max_psi:.3f}", "STABLE (< 0.10)")
-    with p2:
-        st.metric("Retraining Trigger Recommendation", "NO ACTION REQUIRED", "Compliant")
+    if drift_monitor.baseline_df is None:
+        st.error("🚨 Baseline training data (`data/fraud_training_data_25000.csv`) could not be loaded. Please ensure artifacts are generated.")
+    else:
+        st.markdown("""
+        <div class='callout-box'>
+            <b>Prudential Drift Monitoring Architecture:</b><br>
+            This engine evaluates population distribution shifts across the 12 core model features by computing the 
+            <b>Population Stability Index (PSI)</b> against the official <b>25,000 synthetic banking baseline</b>.
+            <br>
+            $$PSI = \\sum \\left( \\text{Actual}\\% - \\text{Expected}\\% \\right) \\times \\ln\\left( \\frac{\\text{Actual}\\%}{\\text{Expected}\\%} \\right)$$
+        </div>
+        """, unsafe_allow_html=True)
 
-    st.dataframe(psi_df, use_container_width=True)
-    st.caption("📌 **PSI Regulatory Rule:** PSI < 0.10 (Stable / Green) | 0.10 ≤ PSI < 0.25 (Review) | PSI ≥ 0.25 (Automated Retraining Mandatory).")
+        # Batch Selection Configuration
+        st.markdown("#### 1. Incoming Production Batch Source Selection")
+        drift_col1, drift_col2 = st.columns([2, 1])
+
+        with drift_col1:
+            batch_source = st.radio(
+                "Select Incoming Batch to Evaluate for Drift:",
+                [
+                    "🟢 Live Operational Stream (Recent 1,000 Production Applications)",
+                    "🟡 Stressed Macroeconomic Shift (Inflation & Inflow Compression Scenario)",
+                    "📁 Upload Custom Production Batch (.csv / .xlsx)"
+                ],
+                index=0
+            )
+
+        incoming_batch_df = None
+
+        if "Live Operational Stream" in batch_source:
+            np.random.seed(101)
+            sample_indices = np.random.choice(len(drift_monitor.baseline_df), size=min(1000, len(drift_monitor.baseline_df)), replace=False)
+            incoming_batch_df = drift_monitor.baseline_df.iloc[sample_indices][FEATURE_NAMES].copy()
+            for f in FEATURE_NAMES:
+                noise = np.random.normal(1.0, 0.02, size=len(incoming_batch_df))
+                incoming_batch_df[f] = np.clip(incoming_batch_df[f] * noise, 0.0, None)
+            st.caption("ℹ️ Evaluating recent 1,000 production applications under standard macroeconomic conditions.")
+
+        elif "Stressed Macroeconomic Shift" in batch_source:
+            np.random.seed(999)
+            sample_indices = np.random.choice(len(drift_monitor.baseline_df), size=min(1000, len(drift_monitor.baseline_df)), replace=False)
+            incoming_batch_df = drift_monitor.baseline_df.iloc[sample_indices][FEATURE_NAMES].copy()
+            incoming_batch_df["income_mismatch_ratio"] *= np.random.uniform(1.35, 1.85, size=len(incoming_batch_df))
+            incoming_batch_df["balance_volatility_cv"] *= np.random.uniform(1.25, 1.60, size=len(incoming_batch_df))
+            incoming_batch_df["iscore_normalized"] *= np.random.uniform(0.75, 0.90, size=len(incoming_batch_df))
+            incoming_batch_df["surge_ratio_max_to_avg"] *= np.random.uniform(1.20, 1.50, size=len(incoming_batch_df))
+            st.caption("⚠️ Simulating significant market-wide credit deterioration (macroeconomic shock scenario).")
+
+        elif "Upload Custom Production Batch" in batch_source:
+            uploaded_batch = st.file_uploader("Upload Production Applications Batch (.csv or .xlsx):", type=["csv", "xlsx"])
+            if uploaded_batch is not None:
+                try:
+                    if uploaded_batch.name.endswith(".xlsx"):
+                        incoming_batch_df = pd.read_excel(uploaded_batch)
+                    else:
+                        incoming_batch_df = pd.read_csv(uploaded_batch)
+                    st.success(f"Custom batch loaded: {len(incoming_batch_df):,} rows.")
+                except Exception as e:
+                    st.error(f"Failed to read batch file: {e}")
+
+        # Compute Dynamic Drift Report via PopulationDriftMonitor
+        if incoming_batch_df is not None:
+            drift_report = drift_monitor.evaluate_batch_drift(incoming_batch_df)
+
+            st.markdown("---")
+            st.markdown("#### 2. Quantitative Stability Audit & Retraining Decision")
+            dp1, dp2, dp3, dp4 = st.columns(4)
+
+            max_psi = drift_report["max_psi_score"]
+            max_feat = drift_report["max_psi_feature"]
+            sys_health = drift_report["system_health"]
+            retraining_req = drift_report["retraining_recommended"]
+
+            with dp1:
+                st.metric(
+                    label="Portfolio Max PSI Score",
+                    value=f"{max_psi:.4f}",
+                    delta=f"Leading Feature: {max_feat}",
+                    delta_color="normal" if max_psi < 0.10 else ("off" if max_psi < 0.25 else "inverse")
+                )
+
+            with dp2:
+                health_color = "normal" if sys_health == "HEALTHY" else ("off" if sys_health == "WARNING" else "inverse")
+                st.metric(
+                    label="Model Population Health",
+                    value=sys_health,
+                    delta="Within Tolerable Bounds" if sys_health != "CRITICAL DRIFT" else "Breached CBE Limit",
+                    delta_color=health_color
+                )
+
+            with dp3:
+                st.metric(
+                    label="Batch Sample Size",
+                    value=f"{drift_report['evaluated_batch_size']:,} Apps",
+                    delta="Evaluated vs 25,000 Baseline"
+                )
+
+            with dp4:
+                st.metric(
+                    label="Retraining Trigger",
+                    value="MANDATORY RETRAINING" if retraining_req else "NO ACTION REQUIRED",
+                    delta="Retraining Trigger (PSI ≥ 0.25)" if retraining_req else "Model In-Calibration",
+                    delta_color="inverse" if retraining_req else "normal"
+                )
+
+            if retraining_req:
+                st.error(f"🚨 **CBE Audit Mandate:** {drift_report['cbe_audit_comment']}")
+            elif sys_health == "WARNING":
+                st.warning(f"⚠️ **Model Risk Warning:** {drift_report['cbe_audit_comment']}")
+            else:
+                st.success(f"✅ **Audit Confirmation:** {drift_report['cbe_audit_comment']}")
+
+            # Extract Active Applicant Features
+            active_applicant_metrics = assessment.get("metrics", {})
+            active_mismatch = float(active_applicant_metrics.get("income_mismatch_ratio", 0.0))
+            active_annuity_bal = float(annuity / max(raw_salary, 1.0))
+            active_iscore = float(iscore_score / 850.0)
+            active_ocr = float(active_applicant_metrics.get("ocr_quality_mean", 0.95))
+            active_uniformity = float(active_applicant_metrics.get("inflow_uniformity_score", 0.15))
+            active_age = float(payload.get("national_id_fields", {}).get("age", {}).get("value", 35.0) or 35.0) / 100.0
+
+            active_values_map = {
+                "income_mismatch_ratio": active_mismatch,
+                "annuity_to_balance_ratio": active_annuity_bal,
+                "iscore_normalized": active_iscore,
+                "ocr_quality_mean": active_ocr,
+                "inflow_uniformity_score": active_uniformity,
+                "applicant_age_norm": active_age,
+                "balance_volatility_cv": float(active_applicant_metrics.get("balance_volatility_cv", 0.35)),
+                "surge_ratio_max_to_avg": float(active_applicant_metrics.get("surge_ratio_max_to_avg", 1.25)),
+                "min_to_avg_balance_ratio": float(active_applicant_metrics.get("min_to_avg_balance_ratio", 0.40)),
+                "employment_tenure_years": float(payload.get("form_data", {}).get("employment_tenure_years", 5.0) or 5.0),
+                "inflow_regularity_score": float(active_applicant_metrics.get("inflow_regularity_score", 0.85)),
+                "bureau_facilities_count": float(payload.get("iscore_report_fields", {}).get("active_facilities_count", {}).get("value", 2.0) or 2.0)
+            }
+
+            st.markdown("---")
+            st.markdown("#### 3. Feature-Level Population Stability Index (PSI) Audit Table")
+
+            detailed_rows = []
+            for feat in FEATURE_NAMES:
+                if feat in drift_report["feature_metrics"]:
+                    b_series = drift_monitor.baseline_df[feat].dropna().values
+                    c_series = incoming_batch_df[feat].dropna().values if feat in incoming_batch_df.columns else np.array([])
+                    
+                    b_mean = float(np.mean(b_series)) if len(b_series) > 0 else 0.0
+                    b_std = float(np.std(b_series)) if len(b_series) > 0 else 0.0
+                    c_mean = float(np.mean(c_series)) if len(c_series) > 0 else 0.0
+                    c_std = float(np.std(c_series)) if len(c_series) > 0 else 0.0
+                    
+                    psi_val = drift_report["feature_metrics"][feat]["psi_score"]
+                    status = drift_report["feature_metrics"][feat]["status"]
+                    
+                    app_val = active_values_map.get(feat, np.nan)
+                    if not np.isnan(app_val) and len(b_series) > 0:
+                        pct_rank = float((b_series < app_val).mean() * 100.0)
+                        pct_str = f"{pct_rank:.1f}th pct"
+                    else:
+                        pct_str = "N/A"
+
+                    detailed_rows.append({
+                        "Feature Name": feat.replace("_", " ").title(),
+                        "Baseline Mean (±Std)": f"{b_mean:.3f} (±{b_std:.2f})",
+                        "Incoming Batch Mean": f"{c_mean:.3f} (±{c_std:.2f})",
+                        "Active Applicant Value": f"{app_val:.3f}" if not np.isnan(app_val) else "N/A",
+                        "Active App Percentile": pct_str,
+                        "Calculated PSI": psi_val,
+                        "Regulatory Status": status
+                    })
+
+            detailed_df = pd.DataFrame(detailed_rows).sort_values("Calculated PSI", ascending=False).reset_index(drop=True)
+            st.dataframe(detailed_df, use_container_width=True)
+
+            st.caption("""
+            📌 **CBE PSI Standards:**
+            * **PSI < 0.10 (Green / Stable):** Normal underwriting operations. No action required.
+            * **0.10 ≤ PSI < 0.25 (Yellow / Moderate Drift):** Review underwriting credit policy and sample manual audits.
+            * **PSI ≥ 0.25 (Red / Significant Drift):** Mandatory model retraining or scorecard recalibration required by model governance committee.
+            """)
+
+            # Interactive Distribution Inspector
+            st.markdown("---")
+            st.markdown("#### 4. Empirical Distribution Comparison (Baseline vs. Current Batch)")
+            inspected_feat = st.selectbox(
+                "Select Feature to Visually Inspect Distribution Shift:",
+                FEATURE_NAMES,
+                index=FEATURE_NAMES.index(max_feat) if max_feat in FEATURE_NAMES else 0
+            )
+
+            if inspected_feat in drift_monitor.baseline_df.columns and inspected_feat in incoming_batch_df.columns:
+                b_hist = drift_monitor.baseline_df[inspected_feat].dropna()
+                c_hist = incoming_batch_df[inspected_feat].dropna()
+
+                bins = np.linspace(
+                    min(b_hist.min(), c_hist.min()),
+                    max(b_hist.max(), c_hist.max()),
+                    25
+                )
+                b_counts, _ = np.histogram(b_hist, bins=bins, density=True)
+                c_counts, _ = np.histogram(c_hist, bins=bins, density=True)
+
+                bin_labels = [f"{bins[i]:.2f}" for i in range(len(bins)-1)]
+                dist_df = pd.DataFrame({
+                    "Baseline Population Density": b_counts,
+                    "Current Batch Density": c_counts
+                }, index=bin_labels)
+
+                st.bar_chart(dist_df)
+                st.caption(f"Comparing probability density of **{inspected_feat}** across 25 quantile buckets. Active applicant observed: **{active_values_map.get(inspected_feat, 0.0):.3f}**.")
+        else:
+            st.info("Please upload or select a batch dataset above to compute dynamic population stability metrics.")
 
 # -----------------------------------------------------------------------------
-# TAB 6: Raw Enriched JSON Viewer
+# TAB 6: Raw Enriched JSON Contract Viewer
 # -----------------------------------------------------------------------------
 with tab6:
     st.subheader("Enriched Contract JSON Payload")
