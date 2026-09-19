@@ -698,7 +698,7 @@ class CreditFraudEngine:
         # LAYER 4: Dual-Engine ML Inference (Isolation Forest + HistGradientBoosting)
         # ---------------------------------------------------------------------
         feature_matrix = HighDimensionalFraudVectorizer.extract_features(application, income_mismatch, uniformity_score)
-        iso_score, gb_prob, is_ml_anomaly = self.model_manager.predict_scores(feature_matrix)
+        iso_score, mahal_score, gb_prob, is_ml_anomaly = self.model_manager.predict_scores(feature_matrix)
 
         if is_ml_anomaly:
             anomaly_signals.append(AnomalySignal(
@@ -713,9 +713,9 @@ class CreditFraudEngine:
         # LAYER 5: Cost-Sensitive Hybrid Fusion & Final Decision
         # ---------------------------------------------------------------------
         fraud_score, risk_level, action = self._calculate_hybrid_decision(
-            violations, anomaly_signals, iso_score, gb_prob
+            violations, anomaly_signals, iso_score, gb_prob, mahal_score
         )
-
+      
         reason_codes, exec_summary_ar, exec_summary_en = self._generate_explainability(
             violations, anomaly_signals, risk_level, application, gb_prob
         )
@@ -1306,7 +1306,8 @@ class CreditFraudEngine:
         violations: List[FraudRuleViolation],
         anomalies: List[AnomalySignal],
         iso_score: float,
-        gb_prob: float
+        gb_prob: float,
+        mahal_score: float = 0.15
     ) -> Tuple[float, str, str]:
         has_critical = any(v.severity == "CRITICAL" for v in violations)
         has_high = any(v.severity == "HIGH" for v in violations)
