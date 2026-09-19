@@ -26,6 +26,8 @@ sys.path.insert(0, BASE_DIR)
 from fraud_engine import CreditFraudEngine
 from adapter import adapt_application_to_model_inputs
 from model.drift_monitor import PopulationDriftMonitor, FEATURE_NAMES
+from llm_explainer import explain_result, LLMNotConfiguredError, LLMRequestError
+import portfolio_analytics
 
 # Page configuration
 st.set_page_config(
@@ -264,13 +266,14 @@ else:
 # -----------------------------------------------------------------------------
 # 6 Comprehensive Tabs (Everything Unified)
 # -----------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📋 Executive Summary (XAI)",
     "🔍 Document & Forensic Audit",
     "🕸️ Fraud Rings & Syndicate Graph",
     "🏛️ Institutional Quantitative Risk Lab",
     "📊 Model Drift & PSI Governance",
-    "💻 Raw Enriched JSON"
+    "💻 Raw Enriched JSON",
+    "🤖 AI Assistant"
 ])
 
 # -----------------------------------------------------------------------------
@@ -984,3 +987,142 @@ with tab6:
     st.subheader("Enriched Contract JSON Payload")
     enriched_payload = engine.enrich_payload(payload)
     st.json(enriched_payload)
+
+# -----------------------------------------------------------------------------
+# TAB 7: AI Assistant -- plain-language explanations + free-form Q&A over
+# the fraud engine, credit-risk model, and portfolio analytics results.
+# Bilingual: replies in whichever language (Arabic/English) the question
+# was asked in. Backed by llm_explainer.py (Google Gemini, free tier).
+# -----------------------------------------------------------------------------
+with tab7:
+    st.subheader("🤖 CrediX AI Assistant — مساعد CrediX الذكي")
+    st.caption(
+        "Ask about this applicant's fraud assessment, credit-risk score, or the "
+        "portfolio/risk-lab numbers — in Arabic or English. اسأل بالعربي أو الإنجليزي."
+    )
+
+    @st.cache_data(show_spinner=False)
+    def _load_portfolio_snapshot():
+        """Best-effort KPI snapshot from the sample core-banking workbook,
+        used to ground portfolio/analytics questions. Returns {} if the
+        workbook isn't available."""
+        try:
+            raw = portfolio_analytics.load_core_banking_data(portfolio_analytics.DEFAULT_WORKBOOK)
+            prepared = portfolio_analytics.prepare_data(raw)
+            return portfolio_analytics.calculate_portfolio_kpis(prepared)
+        except Exception:
+            return {}
+
+    def _load_credit_risk_result():
+        """Best-effort live PD score for the current applicant via the
+        trained model artifacts. Returns None if artifacts haven't been
+        trained/loaded yet (model/train.py not run) -- that's expected in
+        a fresh checkout and the assistant is told to explain that
+        honestly rather than pretend it's unavailable for no reason."""
+        try:
+            import app.model as pd_model
+
+            return pd_model.score_application(app_features, history_features)
+        except FileNotFoundError:
+            return None
+        except Exception:
+            return None
+
+    def _build_ai_blocks():
+        blocks = [{"type": "fraud", "data": assessment}]
+        credit_result = _load_credit_risk_result()
+        if credit_result:
+            blocks.append({"type": "credit_risk", "data": credit_result})
+        portfolio_kpis = _load_portfolio_snapshot()
+        if portfolio_kpis:
+            blocks.append({"type": "portfolio", "data": portfolio_kpis})
+        blocks.append(
+            {
+                "type": "custom",
+                "data": {
+                    "application_id": app_id,
+                    "applicant_name": applicant_name,
+                    "loan_purpose": loan_purpose,
+                    "requested_amount_egp": requested_amount,
+                },
+            }
+        )
+        return blocks
+
+    # Reset the conversation automatically when the selected/uploaded
+    # application changes, so the assistant never answers about the wrong
+    # applicant using a stale chat history.
+    if st.session_state.get("ai_chat_app_id") != app_id:
+        st.session_state["ai_chat_app_id"] = app_id
+        st.session_state["ai_chat_history"] = []
+
+    col_summary, col_reset = st.columns([4, 1])
+    with col_summary:
+        auto_lang = st.radio(
+            "Summary language / لغة الملخص",
+            options=["ar", "en"],
+            format_func=lambda v: "العربية" if v == "ar" else "English",
+            horizontal=True,
+            key="ai_summary_lang",
+        )
+    with col_reset:
+        st.write("")
+        if st.button("🗑️ مسح المحادثة / Clear chat"):
+            st.session_state["ai_chat_history"] = []
+            st.rerun()
+
+    if st.button("✨ اشرحلي النتيجة دي / Explain this result", use_container_width=True):
+        with st.spinner("جاري التحليل... Generating explanation..."):
+            try:
+                result = explain_result(_build_ai_blocks(), question=None, lang=auto_lang)
+                st.session_state["ai_chat_history"].append(
+                    {"role": "assistant", "content": result["answer"]}
+                )
+            except LLMNotConfiguredError as exc:
+                st.warning(
+                    "🔑 الذكاء الاصطناعي مش متفعّل لسه. " + str(exc) + "\n\n"
+                    "See `docs/llm_layer.md` for the 2-minute free setup."
+                )
+            except LLMRequestError as exc:
+                st.error(f"تعذّر الاتصال بمحرك الذكاء الاصطناعي / AI request failed: {exc}")
+
+    st.markdown("---")
+
+    for msg in st.session_state.get("ai_chat_history", []):
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_question = st.chat_input("اسأل عن نتيجة الاحتيال أو الائتمان أو المحفظة... / Ask about fraud, credit, or portfolio results...")
+    if user_question:
+        st.session_state["ai_chat_history"].append({"role": "user", "content": user_question})
+        with st.chat_message("user"):
+            st.markdown(user_question)
+
+        with st.chat_message("assistant"):
+            with st.spinner("..."):
+                try:
+                    # Exclude the just-appended question from `history` since
+                    # explain_result() appends it itself.
+                    prior_history = st.session_state["ai_chat_history"][:-1]
+                    result = explain_result(
+                        _build_ai_blocks(),
+                        question=user_question,
+                        history=prior_history,
+                    )
+                    st.markdown(result["answer"])
+                    st.session_state["ai_chat_history"].append(
+                        {"role": "assistant", "content": result["answer"]}
+                    )
+                except LLMNotConfiguredError as exc:
+                    st.warning(
+                        "🔑 الذكاء الاصطناعي مش متفعّل لسه. " + str(exc) + "\n\n"
+                        "See `docs/llm_layer.md` for the 2-minute free setup."
+                    )
+                except LLMRequestError as exc:
+                    st.error(f"تعذّر الاتصال بمحرك الذكاء الاصطناعي / AI request failed: {exc}")
+
+    st.caption(
+        "ℹ️ Grounded strictly in this applicant's fraud/credit/portfolio data above — "
+        "not a substitute for underwriter sign-off. "
+        "مبني فقط على بيانات هذا الطلب أعلاه — لا يغني عن اعتماد المحلل الائتماني."
+    )
