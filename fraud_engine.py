@@ -521,7 +521,7 @@ class PersistentModelManager:
 
             # Combined Unsupervised Alert
             unsupervised_combined = (0.50 * iso_score) + (0.50 * mahal_score)
-            is_anomaly = bool(unsupervised_combined > 0.60 or gb_prob > 0.50)
+            is_anomaly = bool(unsupervised_combined > 0.75 or gb_prob > 0.50)
 
             return round(iso_score, 4), round(mahal_score, 4), round(gb_prob, 4), is_anomaly
         except Exception:
@@ -598,13 +598,13 @@ class CreditFraudEngine:
     }
 
     # Regulatory & Risk Thresholds
-    INCOME_MISMATCH_WARN = 0.20
-    INCOME_MISMATCH_CRITICAL = 0.40
+    INCOME_MISMATCH_WARN = 0.30
+    INCOME_MISMATCH_CRITICAL = 0.50
     EMPLOYER_SIMILARITY_MIN = 0.65
     MAX_ISCORE_AGE_DAYS = 30
     MIN_APPLICANT_AGE = 21
     MAX_APPLICANT_AGE = 65
-    MIN_OCR_CONFIDENCE_THRESHOLD = 0.70
+    MIN_OCR_CONFIDENCE_THRESHOLD = 0.55
     WINDOW_DRESSING_SURGE_RATIO = 2.5
     ANNUITY_TO_LIQUIDITY_MAX = 0.60
 
@@ -825,12 +825,12 @@ class CreditFraudEngine:
                     rule_code="INC-001-GROSS-INCOME-INFLATION",
                     rule_name_en="Gross Income Inflation Discrepancy",
                     rule_name_ar="تضخيم جوهري في الدخل المذكور بشهادة الراتب",
-                    severity="CRITICAL",
+                    severity="HIGH",
                     description_en=f"Declared salary (EGP {declared_salary:,.0f}) exceeds verified bank net inflows (EGP {bank_inflow:,.0f}) by {mismatch_ratio*100:.1f}%.",
                     description_ar=f"صافي الراتب المذكور ({declared_salary:,.0f} ج.م) يفوق متوسط إيداعات البنك ({bank_inflow:,.0f} ج.م) بنسبة {mismatch_ratio*100:.1f}%.",
                     observed_value=f"{mismatch_ratio*100:.1f}% mismatch",
                     threshold_value=f"< {self.INCOME_MISMATCH_CRITICAL*100:.0f}%",
-                    weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+                    weight=self.SEVERITY_WEIGHTS["HIGH"]
                 ))
             elif mismatch_ratio >= self.INCOME_MISMATCH_WARN and declared_salary > bank_inflow:
                 violations.append(FraudRuleViolation(
@@ -1161,7 +1161,7 @@ class CreditFraudEngine:
         chi_stat = 0.0
         uniformity_score = 0.0
 
-        if sample_transactions and len(sample_transactions) >= 4:
+        if sample_transactions and len(sample_transactions) >= 40:
             benford_anomaly, chi_stat, _ = DeepForensicAnalyzer.evaluate_benford_law(sample_transactions)
             uniformity_score = DeepForensicAnalyzer.calculate_inflow_uniformity(sample_transactions)
 
@@ -1184,7 +1184,7 @@ class CreditFraudEngine:
                 ))
 
         # 5. Last-Digit Uniformity Forensics (Terminal Digit Chi-Square Test)
-        if sample_transactions and len(sample_transactions) >= 10:
+        if sample_transactions and len(sample_transactions) >= 40:
             terminal_digit_anomaly, ld_chi_stat, _ = DeepForensicAnalyzer.evaluate_last_digit_uniformity(sample_transactions)
             if terminal_digit_anomaly:
                 signals.append(AnomalySignal(
@@ -1209,7 +1209,7 @@ class CreditFraudEngine:
 
         # 7. Second-Order Adversarial Forensic Signals (Benford-Evasion Countermeasure)
         adversarial_second_order_anomaly = False
-        if sample_transactions and len(sample_transactions) >= 20:
+        if sample_transactions and len(sample_transactions) >= 40:
             adv_flag, adv_detail = DeepForensicAnalyzer.evaluate_second_order_adversarial_signals(sample_transactions)
             if adv_flag:
                 adversarial_second_order_anomaly = True
@@ -1326,8 +1326,8 @@ class CreditFraudEngine:
         # Multi-Vector Unsupervised Ensemble (Isolation Forest + Mahalanobis Distance)
         unsupervised_score = (0.50 * iso_score) + (0.50 * mahal_score)
         
-        # Hybrid ML Score: 35% Unsupervised Multi-Vector + 65% Supervised Cost-Sensitive GBDT
-        ml_score = (0.35 * unsupervised_score) + (0.65 * gb_prob)
+        # Hybrid ML Score: 20% Unsupervised Multi-Vector + 80% Supervised Cost-Sensitive GBDT
+        ml_score = (0.20 * unsupervised_score) + (0.80 * gb_prob)
 
         # Total Aggregation: 50% Deterministic Rules + 20% Forensic Anomalies + 30% Dual-Engine ML
         base_score = (0.50 * rule_score) + (0.20 * anomaly_score) + (0.30 * ml_score)
@@ -1337,10 +1337,10 @@ class CreditFraudEngine:
             risk_level = "CRITICAL"
             action = "REJECT_SUSPECTED_FRAUD"
             total_score = max(total_score, 0.90)
-        elif has_high or total_score >= 0.45 or ml_score >= 0.50:
+        elif has_high or total_score >= 0.50 or ml_score >= 0.62:
             risk_level = "HIGH"
             action = "FLAG_FOR_MANUAL_FRAUD_INVESTIGATION"
-        elif total_score >= 0.20 or any(a.detected for a in anomalies):
+        elif total_score >= 0.28 or sum(1 for a in anomalies if a.detected) >= 2:
             risk_level = "MEDIUM"
             action = "REQUEST_ADDITIONAL_VERIFICATION_DOCUMENTS"
         else:
