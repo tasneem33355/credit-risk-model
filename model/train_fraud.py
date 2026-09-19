@@ -21,6 +21,7 @@ import joblib
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import HistGradientBoostingClassifier, IsolationForest
+from sklearn.covariance import LedoitWolf
 from sklearn.metrics import (
     roc_auc_score, recall_score, precision_score, f1_score,
     fbeta_score, average_precision_score, confusion_matrix
@@ -118,20 +119,28 @@ def generate_enterprise_banking_population(n_samples: int = 25000, fraud_ratio: 
     fac_b = np.random.poisson(3.0, n_b)
     X_b = np.column_stack([mismatch_b, annuity_b, volat_b, surge_b, ocr_b, min_bal_b, age_b, tenure_b, reg_b, iscore_b, unif_b, fac_b])
 
-    # Modality C: Adversarial Camouflaged Fraud (Type D - 30%)
+    # Modality C: Adversarial Camouflaged Fraud with Latent Realistic Covariance (30%)
     n_c = n_fraud - n_a - n_b
-    mismatch_c = np.random.uniform(0.02, 0.12, n_c)  # Carefully tuned to evade single rules!
-    ocr_c = np.random.uniform(0.82, 0.96, n_c)
-    annuity_c = np.random.uniform(0.38, 0.58, n_c)
-    volat_c = np.random.uniform(0.35, 1.05, n_c)
-    surge_c = np.random.uniform(1.2, 2.1, n_c)
-    min_bal_c = np.random.uniform(0.08, 0.25, n_c)
-    age_c = np.random.beta(3.0, 4.0, n_c)
-    tenure_c = np.random.uniform(1.2, 3.8, n_c)
-    reg_c = np.random.uniform(0.65, 0.88, n_c)
-    iscore_c = np.random.uniform(0.45, 0.72, n_c)
-    unif_c = np.random.uniform(0.32, 0.65, n_c)
-    fac_c = np.random.poisson(3.0, n_c)
+    cam_skill = np.random.beta(3.5, 2.0, n_c)     
+    financial_distress = np.random.beta(4.0, 1.5, n_c) 
+    
+    age_c = np.clip(np.random.beta(3.2, 3.2, n_c), 0.15, 0.95)
+    tenure_c = np.clip(age_c * 15.0 * cam_skill + np.random.normal(1.5, 0.6, n_c), 1.0, 18.0)
+    
+    mismatch_c = np.clip(0.14 - (0.09 * cam_skill) + np.random.normal(0.0, 0.02, n_c), 0.02, 0.18)
+    ocr_c = np.clip(0.80 + (0.16 * cam_skill) + np.random.normal(0.0, 0.04, n_c), 0.75, 0.98)
+    
+    annuity_c = np.clip(0.30 + (0.28 * financial_distress) + np.random.normal(0.0, 0.05, n_c), 0.25, 0.65)
+    min_bal_c = np.clip(0.28 - (0.18 * financial_distress) + np.random.normal(0.0, 0.04, n_c), 0.04, 0.30)
+    
+    reg_c = np.clip(0.68 + (0.22 * cam_skill) + np.random.normal(0.0, 0.05, n_c), 0.55, 0.95)
+    volat_c = np.clip(0.35 + (0.45 * financial_distress) + np.random.normal(0.0, 0.08, n_c), 0.20, 1.10)
+    surge_c = np.clip(1.20 + (0.60 * financial_distress) + np.random.exponential(0.15, n_c), 1.05, 2.30)
+    
+    unif_c = np.clip(0.35 + (0.30 * cam_skill) + np.random.normal(0.0, 0.08, n_c), 0.20, 0.75)
+    iscore_c = np.clip(0.65 - (0.30 * financial_distress) + np.random.normal(0.0, 0.08, n_c), 0.25, 0.75)
+    fac_c = np.clip(np.random.poisson(2.5 + 1.8 * financial_distress), 1, 9)
+
     X_c = np.column_stack([mismatch_c, annuity_c, volat_c, surge_c, ocr_c, min_bal_c, age_c, tenure_c, reg_c, iscore_c, unif_c, fac_c])
 
     X_fraud = np.vstack([X_a, X_b, X_c])
@@ -139,7 +148,7 @@ def generate_enterprise_banking_population(n_samples: int = 25000, fraud_ratio: 
 
     X = np.vstack([X_clean, X_fraud])
     y = np.concatenate([y_clean, y_fraud])
-    return X, y
+    return X, y, X_clean
 
 
 def train():
@@ -151,7 +160,7 @@ def train():
     os.makedirs(data_dir, exist_ok=True)
 
     print("[*] Generating 25,000 realistic correlated Egyptian banking applications...")
-    X, y = generate_enterprise_banking_population(25000, 0.055, random_state=42)
+    X, y, X_clean = generate_enterprise_banking_population(25000, 0.055, random_state=42)
 
     # Save realistic population CSV
     df_pop = pd.DataFrame(X, columns=FEATURE_NAMES)
@@ -260,9 +269,15 @@ def train():
     print(f"[*] OOD Test Benchmark: ROC-AUC = {ood_auc:.4f}, Recall = {ood_rec*100:.1f}%, Precision = {ood_prec*100:.1f}%")
 
     # Persist Production Artifacts
+    # Fit Robust Covariance on Scaled Clean Population to obtain real Mahalanobis Precision Matrix
+    X_clean_scaled = scaler.transform(X_clean)
+    cov_estimator = LedoitWolf().fit(X_clean_scaled)
+    precision_matrix = cov_estimator.precision_
+
     joblib.dump(iso_model, os.path.join(out_dir, "isolation_forest_v2.joblib"))
     joblib.dump(gb_model, os.path.join(out_dir, "fraud_gradient_boost_v2.joblib"))
     joblib.dump(scaler, os.path.join(out_dir, "scaler_v2.joblib"))
+    joblib.dump(precision_matrix, os.path.join(out_dir, "mahalanobis_precision_v2.joblib"))
 
     with open(os.path.join(out_dir, "feature_names.json"), "w", encoding="utf-8") as f:
         json.dump(FEATURE_NAMES, f, indent=2)
