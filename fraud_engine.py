@@ -455,6 +455,7 @@ class PersistentModelManager:
         self.iso_model = None
         self.gb_model = None
         self.scaler = None
+        self.precision_matrix = None
         self.is_loaded = False
         self._load_artifacts()
 
@@ -463,11 +464,14 @@ class PersistentModelManager:
             iso_path = os.path.join(self.artifact_dir, "isolation_forest_v2.joblib")
             gb_path = os.path.join(self.artifact_dir, "fraud_gradient_boost_v2.joblib")
             scaler_path = os.path.join(self.artifact_dir, "scaler_v2.joblib")
+            prec_path = os.path.join(self.artifact_dir, "mahalanobis_precision_v2.joblib")
 
             if os.path.exists(iso_path) and os.path.exists(gb_path) and os.path.exists(scaler_path):
                 self.iso_model = joblib.load(iso_path)
                 self.gb_model = joblib.load(gb_path)
                 self.scaler = joblib.load(scaler_path)
+                if os.path.exists(prec_path):
+                    self.precision_matrix = joblib.load(prec_path)
                 self.is_loaded = True
             else:
                 self._fallback_init()
@@ -497,12 +501,15 @@ class PersistentModelManager:
             raw_iso = self.iso_model.decision_function(scaled)[0]
             iso_score = float(np.clip(0.50 - (raw_iso * 1.8), 0.0, 1.0))
 
-            # 2. Multi-Vector Mahalanobis Distance Outlier Score
+            # 2. True Multi-Vector Mahalanobis Distance Outlier Score
             from scipy import stats
-            # Robust Covariance distance on normalized features
-            diff = scaled[0]
-            # Regularized covariance inverse (identity baseline under standard scaling)
-            mahal_dist_sq = float(np.sum(diff ** 2))
+            diff = scaled[0]  # shape (12,)
+            if self.precision_matrix is not None:
+                # Real Mahalanobis Distance: (x - mu)^T * Sigma^{-1} * (x - mu)
+                mahal_dist_sq = float(diff @ self.precision_matrix @ diff.T)
+            else:
+                mahal_dist_sq = float(np.sum(diff ** 2))
+                
             # Chi-Square CDF mapping with df=12
             mahal_score = float(stats.chi2.cdf(mahal_dist_sq, df=12))
 
