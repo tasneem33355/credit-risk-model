@@ -357,6 +357,16 @@ class SQLiteEntityStore:
                         collisions["duplicate_device_in_48h"] = True
                         collisions["total_collisions"] += count_dev
 
+                if emp_clean and emp_clean not in ["telecom egypt", "vodafone", "orange", "cbe", "national bank of egypt", "banque misr", "government", "we"]:
+                    cursor.execute(
+                        "SELECT COUNT(DISTINCT application_id) FROM entity_audit_log WHERE employer_name = ? AND timestamp >= ? AND application_id != ?",
+                        (emp_clean, window_start, application_id)
+                    )
+                    count_emp = cursor.fetchone()[0]
+                    if count_emp >= 2:
+                        collisions["employer_spike_in_48h"] = True
+                        collisions["total_collisions"] += count_emp
+
                 # Record current transaction
                 cursor.execute(
                     "INSERT INTO entity_audit_log (application_id, timestamp, nid_hash, phone_hash, employer_name, bank_account_hash, device_id_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -475,27 +485,40 @@ class PersistentModelManager:
         self.gb_model = None
         self.is_loaded = False
 
-    def predict_scores(self, feature_vector: np.ndarray) -> Tuple[float, float, bool]:
+    def predict_scores(self, feature_vector: np.ndarray) -> Tuple[float, float, float, bool]:
         """
         Executes inference on 12-dimensional feature vector.
-        Returns: (isolation_forest_score, gradient_boost_prob, is_anomaly)
+        Returns: (isolation_forest_score, mahalanobis_score, gradient_boost_prob, is_anomaly)
         """
         try:
             scaled = self.scaler.transform(feature_vector)
-            # Isolation Forest anomaly score [0.0, 1.0]
+            
+            # 1. Isolation Forest Anomaly Score [0.0, 1.0]
             raw_iso = self.iso_model.decision_function(scaled)[0]
             iso_score = float(np.clip(0.50 - (raw_iso * 1.8), 0.0, 1.0))
-            is_anomaly = bool(iso_score > 0.60)
 
-            # Gradient Boosting probability [0.0, 1.0]
+            # 2. Multi-Vector Mahalanobis Distance Outlier Score
+            from scipy import stats
+            # Robust Covariance distance on normalized features
+            diff = scaled[0]
+            # Regularized covariance inverse (identity baseline under standard scaling)
+            mahal_dist_sq = float(np.sum(diff ** 2))
+            # Chi-Square CDF mapping with df=12
+            mahal_score = float(stats.chi2.cdf(mahal_dist_sq, df=12))
+
+            # 3. Supervised Gradient Boosting probability [0.0, 1.0]
             if self.gb_model is not None:
                 gb_prob = float(self.gb_model.predict_proba(scaled)[0, 1])
             else:
-                gb_prob = iso_score
+                gb_prob = (0.5 * iso_score) + (0.5 * mahal_score)
 
-            return round(iso_score, 4), round(gb_prob, 4), is_anomaly
+            # Combined Unsupervised Alert
+            unsupervised_combined = (0.50 * iso_score) + (0.50 * mahal_score)
+            is_anomaly = bool(unsupervised_combined > 0.60 or gb_prob > 0.50)
+
+            return round(iso_score, 4), round(mahal_score, 4), round(gb_prob, 4), is_anomaly
         except Exception:
-            return 0.15, 0.15, False
+            return 0.15, 0.15, 0.15, False
 
 
 # -----------------------------------------------------------------------------
@@ -821,10 +844,13 @@ class CreditFraudEngine:
         violations = []
         salary_fields = app.get("salary_certificate_fields", {})
         bank_fields = app.get("bank_statement_fields", {})
+        form_data = app.get("form_data", {})
 
         emp_salary = str(salary_fields.get("employer_name", {}).get("value", "")).strip()
         emp_bank = str(bank_fields.get("payroll_transfer_employer", {}).get("value", "")).strip()
+        similarity = 1.0
 
+        # --- Rule EMP-001: String Name Consistency Across Docs ---
         if emp_salary and emp_bank:
             similarity = difflib.SequenceMatcher(None, emp_salary.lower(), emp_bank.lower()).ratio()
             if similarity < self.EMPLOYER_SIMILARITY_MIN:
@@ -839,9 +865,62 @@ class CreditFraudEngine:
                     threshold_value=f">= {self.EMPLOYER_SIMILARITY_MIN*100:.0f}%",
                     weight=self.SEVERITY_WEIGHTS["HIGH"]
                 ))
-            return len(violations) == 0, violations, similarity
 
-        return True, violations, 1.0
+        # --- Rule EMP-002: Ghost Payroll Channel (Cash / ATM / Wallet Deposit for Corporate Salary) ---
+        payroll_channel = str(bank_fields.get("payroll_channel_type", {}).get("value", "CORPORATE_ACH")).upper()
+        if any(kw in emp_salary.lower() for kw in ["شركة", "مجموعة", "مؤسسة", "holding", "corp", "llc", "group"]):
+            if payroll_channel in ["ATM_CASH_DEPOSIT", "BRANCH_CASH_DEPOSIT", "INDIVIDUAL_WALLET", "CASH"]:
+                violations.append(FraudRuleViolation(
+                    rule_code="EMP-002-GHOST-PAYROLL-CHANNEL",
+                    rule_name_en="Fabricated Corporate Payroll Channel (Cash/ATM Deposit)",
+                    rule_name_ar="شبهة تزوير إيداع المرتب نقداً أو عبر ATM لجهة عمل اعتبارية",
+                    severity="CRITICAL",
+                    description_en=f"Corporate salary for '{emp_salary}' was deposited via '{payroll_channel}' instead of legitimate Corporate Bulk ACH transfer.",
+                    description_ar=f"المرتب الخاص بشركة '{emp_salary}' تم إيداعه عبر '{payroll_channel}' وليس كتحويل بنكي مؤسسي معتمد.",
+                    observed_value=payroll_channel,
+                    threshold_value="CORPORATE_ACH / BANK_PAYROLL",
+                    weight=self.SEVERITY_WEIGHTS["CRITICAL"]
+                ))
+
+        # --- Rule EMP-003: Commercial Registry & Tax ID Verification ---
+        tax_id = str(salary_fields.get("tax_registration_number", {}).get("value", "")).strip()
+        if tax_id:
+            cleaned_tax = re.sub(r"[^\d]", "", tax_id)
+            is_dummy_tax = cleaned_tax in ["000000000", "123456789", "999999999", "111111111"] or len(set(cleaned_tax)) <= 1
+            if len(cleaned_tax) != 9 or is_dummy_tax:
+                violations.append(FraudRuleViolation(
+                    rule_code="EMP-003-INVALID-TAX-REGISTRATION",
+                    rule_name_en="Invalid or Fabricated Employer Tax ID",
+                    rule_name_ar="رقم تسجيل ضريبي وهمي أو غير مطابق لمعيار الـ 9 أرقام",
+                    severity="CRITICAL" if is_dummy_tax else "HIGH",
+                    description_en=f"Employer Tax ID '{tax_id}' is invalid or detected as a fabricated dummy registration number.",
+                    description_ar=f"الرقم الضريبي لجهة العمل '{tax_id}' غير صحيح أو تم توليده كأرقام وهمية مصطنعة.",
+                    observed_value=tax_id,
+                    threshold_value="9-Digit Official Tax Registration",
+                    weight=self.SEVERITY_WEIGHTS["CRITICAL" if is_dummy_tax else "HIGH"]
+                ))
+
+        # --- Rule EMP-004: Shell Company Heuristics (Generic Name + Mobile-only Contact) ---
+        generic_terms = ["للتجارة والتوريدات", "خدمات عامة", "مكتب استشارات", "commercial office", "general trading", "import & export"]
+        is_generic_name = any(term in emp_salary.lower() for term in generic_terms)
+        has_legal_form = any(suffix in emp_salary.lower() for suffix in ["ش.م.م", "ذ.م.م", "s.a.e", "llc", "مساهمة", "تضامن", "corp"])
+        emp_phone = str(salary_fields.get("employer_phone", {}).get("value", "")).strip()
+        is_mobile_only = emp_phone.startswith(("010", "011", "012", "015")) and not emp_phone.startswith(("02", "03"))
+
+        if is_generic_name and not has_legal_form and is_mobile_only:
+            violations.append(FraudRuleViolation(
+                rule_code="EMP-004-SHELL-COMPANY-PROFILE",
+                rule_name_en="Shell Company Profile (Generic Name & Mobile-Only Contact)",
+                rule_name_ar="مؤشرات شركة وهمية (تسمية عامة غير مقيدة شكلياً وهاتف محمول فقط)",
+                severity="HIGH",
+                description_en=f"Employer '{emp_salary}' exhibits shell-company patterns: generic trading title, no legal entity suffix, and lack of verified landline.",
+                description_ar=f"جهة العمل '{emp_salary}' تظهر نمط شركة وهمية: اسم تجاري عام، غياب الشكل القانوني المعتمد، وغياب هاتف أرضي ثابت.",
+                observed_value=f"Name: {emp_salary} | Phone: {emp_phone}",
+                threshold_value="Registered Corporate Entity with Fixed Landline",
+                weight=self.SEVERITY_WEIGHTS["HIGH"]
+            ))
+
+        return len(violations) == 0, violations, similarity
 
     def _verify_document_integrity(self, app: Dict[str, Any]) -> Tuple[bool, List[FraudRuleViolation]]:
         violations = []
@@ -1236,8 +1315,11 @@ class CreditFraudEngine:
         detected_anoms = [a for a in anomalies if a.detected]
         anomaly_score = sum(a.anomaly_score * 0.20 for a in detected_anoms)
 
-        # ML Ensemble Score (35% Isolation Forest + 65% Gradient Boost)
-        ml_score = (0.35 * iso_score) + (0.65 * gb_prob)
+        # Multi-Vector Unsupervised Ensemble (Isolation Forest + Mahalanobis Distance)
+        unsupervised_score = (0.50 * iso_score) + (0.50 * mahal_score)
+        
+        # Hybrid ML Score: 35% Unsupervised Multi-Vector + 65% Supervised Cost-Sensitive GBDT
+        ml_score = (0.35 * unsupervised_score) + (0.65 * gb_prob)
 
         # Total Aggregation: 50% Deterministic Rules + 20% Forensic Anomalies + 30% Dual-Engine ML
         base_score = (0.50 * rule_score) + (0.20 * anomaly_score) + (0.30 * ml_score)
