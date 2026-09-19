@@ -723,12 +723,10 @@ with tab5:
         incoming_batch_df = None
 
         if "Live Operational Stream" in batch_source:
+            # Clean operational sample drawn directly from baseline population
             np.random.seed(101)
             sample_indices = np.random.choice(len(drift_monitor.baseline_df), size=min(1000, len(drift_monitor.baseline_df)), replace=False)
             incoming_batch_df = drift_monitor.baseline_df.iloc[sample_indices][FEATURE_NAMES].copy()
-            for f in FEATURE_NAMES:
-                noise = np.random.normal(1.0, 0.02, size=len(incoming_batch_df))
-                incoming_batch_df[f] = np.clip(incoming_batch_df[f] * noise, 0.0, None)
             st.caption("ℹ️ Evaluating recent 1,000 production applications under standard macroeconomic conditions.")
 
         elif "Stressed Macroeconomic Shift" in batch_source:
