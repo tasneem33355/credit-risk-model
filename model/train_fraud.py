@@ -298,8 +298,12 @@ def train():
             "false_alarm_rate_fpr": round(fp / (tn + fp), 4)
         },
         "governance_audit": {
-            "audit_conclusion": "RIGOROUSLY CALIBRATED WITH MONOTONIC FINANCIAL CONSTRAINTS",
-            "model_risk_status": "APPROVED_FOR_DUAL_LAYER_PRODUCTION",
+            "audit_conclusion": (
+                f"PASSED CBE MRM STANDARDS (OOD AUC: {ood_auc:.4f} >= 0.85, Recall: {ood_rec*100:.1f}% >= 85%, FPR: {(fp/(tn+fp))*100:.2f}% <= 6%)"
+                if (ood_auc >= 0.85 and ood_rec >= 0.85 and (fp / (tn + fp)) <= 0.06) else
+                f"FLAGGED: BREACHED CBE MRM BENCHMARK (OOD AUC: {ood_auc:.4f}, Recall: {ood_rec*100:.1f}%, FPR: {(fp/(tn+fp))*100:.2f}%)"
+            ),
+            "model_risk_status": "APPROVED_FOR_DUAL_LAYER_PRODUCTION" if (ood_auc >= 0.85 and ood_rec >= 0.85 and (fp / (tn + fp)) <= 0.06) else "REQUIRES_MRM_COMMITTEE_REVIEW",
             "defense_in_depth_note": "ML inference guarded by Layer 1 CBE deterministic rules and Layer 2 Benford/Terminal-digit forensics."
         }
     }
