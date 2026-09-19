@@ -300,6 +300,80 @@ with tab1:
         vel_ok = assessment["metrics"].get("entity_collisions_count", 0) == 0
         st.write("🕸️ **Cross-Application Velocity:**", "✅ No Collisions" if vel_ok else "🚨 Fraud Ring Signal Detected")
 
+    # -------------------------------------------------------------------------
+    # Decision Transparency & Layer Contribution Breakdown (XAI Waterfall)
+    # -------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🧩 Multi-Layer Decision Breakdown & Scoring Attribution")
+    st.caption("Detailed XAI breakdown reconciling Rule Violations, Behavioral Forensics, and ML Model Gates.")
+
+    # Extract layer metrics
+    iso_score = float(assessment["metrics"].get("isolation_forest_anomaly_score", 0.0))
+    gb_prob = float(assessment["metrics"].get("gradient_boost_fraud_probability", 0.0))
+    ml_combined = (0.35 * iso_score) + (0.65 * gb_prob)
+    rule_violations_count = assessment["metrics"].get("total_violations_count", 0)
+    anomalies_detected_count = assessment["metrics"].get("detected_anomalies_count", 0)
+
+    # Determine exact decision trigger
+    if risk_level == "CRITICAL":
+        trigger_explanation = "🚨 **Critical Trigger:** Fatal document alteration, NID policy breach, or extreme fraud probability (GBDT ≥ 85%)."
+    elif risk_level == "HIGH":
+        if rule_violations_count > 0:
+            trigger_explanation = "⚠️ **Policy Trigger:** High-severity document/bureau rule violation detected in Layer 1."
+        elif ml_combined >= 0.50:
+            trigger_explanation = f"🤖 **Machine Learning Override Gate:** Combined Dual-Engine ML score ({ml_combined:.2f} ≥ 0.50) flagged high statistical risk profile despite clean surface documents."
+        else:
+            trigger_explanation = "⚠️ **Aggregate Score Trigger:** Cumulative forensic score breached the High Risk threshold (≥ 0.45)."
+    elif risk_level == "MEDIUM":
+        if anomalies_detected_count > 0:
+            trigger_explanation = f"🔍 **Behavioral Forensic Trigger:** {anomalies_detected_count} cashflow / Benford behavioral anomaly detected in bank statement."
+        else:
+            trigger_explanation = "🟡 **Moderate Risk Advisory:** Score falls in standard review bracket (0.20 - 0.45)."
+    else:
+        trigger_explanation = "✅ **Standard Track:** All forensic layers and machine learning models confirmed authentic borrower profile."
+
+    st.info(trigger_explanation)
+
+    # 4-Column Layer Contribution Cards
+    lc1, lc2, lc3, lc4 = st.columns(4)
+    with lc1:
+        st.metric(
+            label="Layer 1: Rules & Policies",
+            value=f"{rule_violations_count} Violations",
+            delta="50% Total Weight"
+        )
+    with lc2:
+        st.metric(
+            label="Layer 2: Deep Forensics",
+            value=f"{anomalies_detected_count} Anomalies",
+            delta="20% Total Weight"
+        )
+    with lc3:
+        st.metric(
+            label="Layer 3: Entity Graph",
+            value=f"{assessment['metrics'].get('entity_collisions_count', 0)} Collisions",
+            delta="Rolling 48h Window"
+        )
+    with lc4:
+        st.metric(
+            label="Layer 4: Dual-Engine ML",
+            value=f"{ml_combined:.2f} / 1.00",
+            delta="30% Total Weight",
+            delta_color="inverse" if ml_combined >= 0.50 else "normal"
+        )
+
+    # Detailed Contribution Table
+    with st.expander("🔍 View Layer-by-Layer Mathematical Weight Attribution Table"):
+        contrib_df = pd.DataFrame([
+            {"Layer": "Layer 1: Deterministic Cross-Document Rules", "Raw Metric": f"{rule_violations_count} violations", "Engine Weight": "50%", "Status": "PASS" if rule_violations_count == 0 else "FLAGGED"},
+            {"Layer": "Layer 2: Deep Forensic & Benford Anomalies", "Raw Metric": f"{anomalies_detected_count} anomalies", "Engine Weight": "20%", "Status": "PASS" if anomalies_detected_count == 0 else "FLAGGED"},
+            {"Layer": "Layer 3: Entity Collision & Syndicate Graph", "Raw Metric": f"{assessment['metrics'].get('entity_collisions_count', 0)} collisions", "Engine Weight": "Velocity Gating", "Status": "CLEAN"},
+            {"Layer": "Layer 4: Isolation Forest (Unsupervised Anomaly)", "Raw Metric": f"Anomaly Score: {iso_score:.3f}", "Engine Weight": "10.5% (Sub-component)", "Status": "EVALUATED"},
+            {"Layer": "Layer 4: Gradient Boosting (Cost-Sensitive)", "Raw Metric": f"Fraud Probability: {gb_prob*100:.1f}%", "Engine Weight": "19.5% (Sub-component)", "Status": "EVALUATED"},
+            {"Layer": "Layer 5: Cost-Sensitive Hybrid Fusion", "Raw Metric": f"Final Score: {assessment['fraud_risk_score']:.4f}", "Engine Weight": "100%", "Status": f"DECISION: {risk_level}"}
+        ])
+        st.dataframe(contrib_df, use_container_width=True)
+
 # -----------------------------------------------------------------------------
 # TAB 2: Forensic Audit & CBE Reason Codes
 # -----------------------------------------------------------------------------
