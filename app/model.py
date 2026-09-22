@@ -130,6 +130,65 @@ def decide(prob_default: float) -> Tuple[str, str]:
         return "AUTO-REJECT", "High Risk (Grade E) - Decline Application"
 
 
+def compute_business_impact(prob_default: float, amt_credit: float) -> Dict[str, Any]:
+    """Per-applicant translation of the docs/model_card.md §4 P&L assumptions
+    (NIM = 10% of AMT_CREDIT on performing loans, LGD = 45% of AMT_CREDIT on
+    default) -- the bank's own business framing, applied to one applicant
+    instead of the portfolio-level simulation."""
+    lgd = config.LOSS_GIVEN_DEFAULT
+    nim = config.NET_INTEREST_MARGIN
+
+    expected_loss = prob_default * lgd * amt_credit
+    expected_annual_profit = nim * amt_credit
+    net_expected_value = expected_annual_profit - expected_loss
+    risk_adjusted_return = (net_expected_value / amt_credit) if amt_credit else 0.0
+
+    return {
+        "requested_amount": round(amt_credit, 2),
+        "expected_loss_if_default": round(expected_loss, 2),
+        "expected_annual_profit_if_performing": round(expected_annual_profit, 2),
+        "net_expected_value": round(net_expected_value, 2),
+        "risk_adjusted_return": f"{risk_adjusted_return*100:.2f}%",
+        "assumptions": {"loss_given_default": lgd, "net_interest_margin": nim},
+    }
+
+
+def portfolio_context(decision: str, prob_default: float) -> Dict[str, Any]:
+    """Frame this applicant's decision against the §3 portfolio simulation
+    table in docs/model_card.md -- i.e. what NPL rate a bank running this
+    model at a similar acceptance posture has historically carried, instead
+    of comparing this one PD to an arbitrary single number."""
+    market = config.MARKET_BAD_RATE
+    table = config.PORTFOLIO_NPL_BY_ACCEPTANCE
+
+    if decision == "AUTO-APPROVE":
+        npl_low, npl_high = table[0.40], table[0.70]
+        note = (
+            f"Applicant falls in the low-risk band the model card's portfolio "
+            f"simulation (§3) associates with acceptance rates of 40-70%, where "
+            f"historical portfolio NPL runs {npl_low*100:.2f}%-{npl_high*100:.2f}% "
+            f"vs. a {market*100:.2f}% market baseline."
+        )
+    elif decision == "MANUAL REVIEW":
+        npl_mid = table[0.80]
+        note = (
+            f"Applicant sits between the auto-approve and auto-reject cutoffs "
+            f"(§5) -- comparable to the {npl_mid*100:.2f}% portfolio NPL band at "
+            f"~80% acceptance in §3. Collateral/guarantor terms are the model "
+            f"card's recommended treatment at this risk level, not an outright "
+            f"decline."
+        )
+    else:
+        note = (
+            f"Applicant's PD ({prob_default*100:.2f}%) is above the §3 "
+            f"portfolio simulation's highest-NPL band "
+            f"({table[0.85]*100:.2f}% at 85% acceptance) -- accepting "
+            f"applicants at this risk level has historically raised portfolio "
+            f"NPL above the {market*100:.2f}% market baseline rather than "
+            f"reducing it (see §4 P&L simulation)."
+        )
+    return {"framing": note}
+
 def reason_codes(application: Dict[str, Any], full_features: Dict[str, float]) -> List[str]:
     """Rule-based adverse-action reason codes, required under fair-lending
     regulation whenever an applicant is rejected or referred for review."""
@@ -163,13 +222,18 @@ def score_application(application: Dict[str, Any], history_features: Dict[str, f
 
     full_features = dict(zip(bundle.feature_names, np.asarray(X.todense()).ravel().tolist()))
     codes = reason_codes(application, full_features)
-
+    amt_credit = float(application.get("AMT_CREDIT", 0) or 0)
+    business_impact = compute_business_impact(prob_default, amt_credit)
+    portfolio_note = portfolio_context(decision, prob_default)
+    
     return {
         "credit_score": credit_score,
         "probability_of_default": f"{prob_default*100:.2f}%",
         "decision": decision,
         "risk_tier": risk_tier,
         "reason_codes": codes,
+        "business_impact": business_impact,
+        "portfolio_context": portfolio_note,
         "model_version": MODEL_VERSION,
         "used_history_defaults": debug_info["used_history_defaults"],
     }
