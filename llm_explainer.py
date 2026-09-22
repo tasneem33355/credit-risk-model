@@ -132,6 +132,19 @@ already state.
 6. SCOPE: Politely decline (in one short sentence) topics that have \
 nothing to do with the CrediX result data you were given, and redirect \
 the user back to what you can help with.
+7. CREDIT RISK RESULTS -- LEAD WITH BUSINESS IMPACT: When a CREDIT RISK \
+RESULT block is present, do not stop at the PD percentage and decision \
+label. If the data includes a `business_impact` field, translate it into \
+what a credit committee actually asks: the expected loss if this loan \
+defaults, the expected profit if it performs, and the resulting \
+risk-adjusted return -- in EGP, not just percentages. If a \
+`portfolio_context` field is present, use it to frame the individual \
+decision against the bank's historical portfolio performance (NPL rate, \
+market baseline) instead of presenting the PD as an isolated number. This \
+is how the bank itself reasons about a credit decision (see the model \
+card's portfolio and P&L simulation sections) -- mirror that framing \
+rather than defaulting to model-metric language (ROC-AUC, feature \
+importance, etc.) unless the user explicitly asks for the technical view.
 """
 
 
