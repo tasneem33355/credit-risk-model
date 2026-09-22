@@ -1,0 +1,16 @@
+{
+  "roc_auc": 0.789501600524126,
+  "pr_auc": 0.28825509820013084,
+  "gini": 0.579003201048252,
+  "ks_statistic": 0.4419303157761767,
+  "baseline_bad_rate": 0.08072776937710356,
+  "blend_weights": {
+    "xgb": 0.3,
+    "lgb": 0.7
+  },
+  "n_train": 246008,
+  "n_valid": 61503,
+  "n_features": 409,
+  "cutoff_approve": 0.0723,
+  "cutoff_reject": 0.2
+}
