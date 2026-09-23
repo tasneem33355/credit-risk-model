@@ -167,7 +167,11 @@ _BLOCK_LABELS = {
     "XGBoost + LightGBM ensemble)",
     "fraud": "FRAUD DETECTION RESULT (CrediX 5-layer application fraud & "
     "consistency engine)",
-    "portfolio": "PORTFOLIO / RISK-LAB ANALYTICS SNAPSHOT",
+    "portfolio": "PORTFOLIO / RISK-LAB ANALYTICS SNAPSHOT (static core-banking "
+    "sample workbook -- the bank's existing book)",
+    "scored_portfolio": "LIVE SCORED-APPLICATION PORTFOLIO (aggregated across every "
+    "application this deployment's trained PD model has actually scored so far -- "
+    "distinct from the static core-banking snapshot above)",
     "custom": "ADDITIONAL CONTEXT DATA",
 }
 
