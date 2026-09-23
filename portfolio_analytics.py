@@ -456,6 +456,60 @@ def build_transaction_analytics(
 
 
 # ---------------------------------------------------------------------
+# Scored-Portfolio Analytics (live PD-model decisions, via decision_log.py)
+# ---------------------------------------------------------------------
+
+def calculate_scored_portfolio_kpis(decisions_df: pd.DataFrame) -> Dict[str, object]:
+    """
+    Aggregates the live decisions log (decision_log.py -- every application
+    actually scored by the trained XGBoost/LightGBM model) into
+    portfolio-level KPIs.
+
+    This is deliberately separate from calculate_portfolio_kpis(), which
+    summarizes the static core-banking sample workbook: that function
+    describes the bank's existing book, this one describes what the model
+    itself has decided across every applicant it has scored so far.
+    Returns {} if nothing has been scored yet.
+    """
+    if decisions_df is None or decisions_df.empty:
+        return {}
+
+    df = decisions_df.copy()
+    total = len(df)
+
+    decision_counts = (
+        df["decision"].value_counts().to_dict() if "decision" in df.columns else {}
+    )
+    approved = int(decision_counts.get("AUTO-APPROVE", 0))
+    rejected = int(decision_counts.get("AUTO-REJECT", 0))
+    review = int(decision_counts.get("MANUAL REVIEW", 0))
+
+    def _sum(col: str) -> float:
+        if col not in df.columns:
+            return 0.0
+        return float(pd.to_numeric(df[col], errors="coerce").fillna(0).sum())
+
+    def _mean(col: str) -> float:
+        if col not in df.columns:
+            return 0.0
+        val = pd.to_numeric(df[col], errors="coerce").mean()
+        return float(val) if not np.isnan(val) else 0.0
+
+    return {
+        "scored_applications_count": int(total),
+        "auto_approve_count": approved,
+        "manual_review_count": review,
+        "auto_reject_count": rejected,
+        "approval_rate": float(approved / total) if total else 0.0,
+        "average_probability_of_default": _mean("probability_of_default"),
+        "average_credit_score": _mean("credit_score"),
+        "total_requested_exposure": _sum("requested_amount"),
+        "total_expected_loss": _sum("expected_loss"),
+        "total_expected_profit": _sum("expected_profit"),
+    }
+
+
+# ---------------------------------------------------------------------
 # Concentration Analytics
 # ---------------------------------------------------------------------
 
