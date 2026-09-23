@@ -24,6 +24,7 @@ from fraud_engine import CreditFraudEngine
 from adapter import adapt_application_to_model_inputs
 from app import model, config
 from app.schemas import CreditApplication, CreditDecision
+import decision_log
 
 # Optional LLM Explainer Import
 try:
@@ -183,6 +184,12 @@ def evaluate_end_to_end(payload: Dict[str, Any]):
             try:
                 credit_decision = model.score_application(app_features, history_features)
                 credit_decision.pop("used_history_defaults", None)
+                decision_log.log_decision(
+                    application_id=payload.get("application_id", "N/A"),
+                    credit_result=credit_decision,
+                    fraud_risk_level=assessment.get("fraud_risk_level"),
+                    source="api",
+                )
             except Exception as e:
                 credit_decision = {
                     "error": f"Credit scoring model error: {str(e)}",
