@@ -28,6 +28,7 @@ from adapter import adapt_application_to_model_inputs
 from model.drift_monitor import PopulationDriftMonitor, FEATURE_NAMES
 from llm_explainer import explain_result, LLMNotConfiguredError, LLMRequestError
 import portfolio_analytics
+import decision_log
 
 # Page configuration
 st.set_page_config(
@@ -190,6 +191,29 @@ with st.spinner("Executing Forensic Audit & Portfolio Marginal Assessment..."):
     assessment = engine.evaluate(payload)
     app_features, history_features = adapt_application_to_model_inputs(payload)
     combined_features = {**app_features, **history_features}
+
+    # Live PD-model score (trained XGBoost + LightGBM ensemble), computed
+    # once here and reused everywhere else in the page (Risk Lab tab, AI
+    # Assistant tab) instead of each tab guessing/recomputing its own PD.
+    # Returns None if model/train.py hasn't been run yet (no artifacts) --
+    # every downstream section falls back to its documented heuristic in
+    # that case rather than crashing.
+    try:
+        import app.model as pd_model
+
+        credit_result = pd_model.score_application(app_features, history_features)
+    except FileNotFoundError:
+        credit_result = None
+    except Exception:
+        credit_result = None
+
+    if credit_result:
+        decision_log.log_decision(
+            application_id=payload.get("application_id", "N/A"),
+            credit_result=credit_result,
+            fraud_risk_level=assessment.get("fraud_risk_level"),
+            source="dashboard",
+        )
 
 # Safe metadata retrieval matching v2 JSON contract
 app_id = payload.get("application_id", "N/A")
@@ -466,26 +490,41 @@ with tab4:
     req_amount = float(payload.get("form_data", {}).get("requested_amount", 0.0) or 100000.0)
     iscore_score = float(payload.get("iscore_report_fields", {}).get("credit_score", {}).get("value", 650.0) or 650.0)
     
-    # Active PD calculation
+    # Active PD calculation.
+    # Prefer the trained XGBoost/LightGBM ensemble's own prediction
+    # (`credit_result`, computed once near the top of the page) over the
+    # heuristic rule below. The heuristic remains as a documented fallback
+    # for a fresh checkout where model/train.py hasn't been run yet.
+    model_pd = None
+    if credit_result:
+        try:
+            model_pd = float(str(credit_result["probability_of_default"]).rstrip("%")) / 100.0
+        except (KeyError, ValueError):
+            model_pd = None
+
     base_calc_pd = 0.035 if is_returning else 0.085
     if iscore_score < 550:
         base_calc_pd += 0.065
     elif iscore_score > 720:
         base_calc_pd -= 0.015
 
-    # IFRS 9 Staging & Loss Severity mapping
+    # IFRS 9 Staging & Loss Severity mapping. A CRITICAL fraud finding is a
+    # business override regardless of what any statistical model says --
+    # it always forces Stage 3. Otherwise, prefer the live model PD.
+    pd_source = "Live Model Prediction (XGBoost + LightGBM)" if model_pd is not None else "Heuristic Policy Rule (model artifacts not loaded)"
+
     if risk_level == "CRITICAL":
         app_pd = 1.00
         assigned_stage = "Stage 3 (Credit Impaired / Default)"
         stage_desc = "Fatal fraud / document tampering detected. Loan is non-performing upon origination."
         app_lgd = 0.55
     elif risk_level in ["MEDIUM", "HIGH"] or mismatch > 20.0:
-        app_pd = min(0.35, base_calc_pd * 2.5)
+        app_pd = model_pd if model_pd is not None else min(0.35, base_calc_pd * 2.5)
         assigned_stage = "Stage 2 (Underperforming / SICR)"
         stage_desc = "Significant Increase in Credit Risk triggered via forensic mismatch or liquidity stress."
         app_lgd = 0.45
     else:
-        app_pd = max(0.015, base_calc_pd)
+        app_pd = model_pd if model_pd is not None else max(0.015, base_calc_pd)
         assigned_stage = "Stage 1 (Performing)"
         stage_desc = "Clean forensic audit and stable cashflows. Subject to 12-Month ECL provisioning."
         app_lgd = 0.45
@@ -526,7 +565,7 @@ with tab4:
         st.metric(
             label="Applicant Estimated PD",
             value=f"{app_pd * 100:.1f}%",
-            delta="Heuristic Policy Rule",
+            delta=pd_source,
             delta_color="normal" if app_pd <= 0.15 else "inverse"
         )
     with m3:
@@ -546,6 +585,31 @@ with tab4:
 
     st.caption(f"📌 **Active IFRS 9 Rule:** {stage_desc}")
     st.caption(f"🏛️ **Reference Portfolio Baseline:** EGP {BASE_EAD:,.1f}M EAD | EGP {BASE_ECL:,.1f}M Baseline ECL | {BASE_NPL_RATE*100:.2f}% Baseline NPL.")
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # SECTION 1b: Live Scored-Application Portfolio (real model decisions log)
+    # -------------------------------------------------------------------------
+    st.markdown("### 1b. Live Scored-Application Portfolio")
+    st.caption(
+        "Aggregated from every application this deployment's trained PD model has actually scored "
+        "(decision_log.py) -- distinct from the illustrative EGP 485.2M reference book above."
+    )
+    scored_kpis = portfolio_analytics.calculate_scored_portfolio_kpis(decision_log.load_scored_decisions())
+    if scored_kpis:
+        sp1, sp2, sp3, sp4 = st.columns(4)
+        with sp1:
+            st.metric("Applications Scored", f"{scored_kpis['scored_applications_count']:,}")
+        with sp2:
+            st.metric("Approval Rate", f"{scored_kpis['approval_rate']*100:.1f}%",
+                       f"{scored_kpis['auto_approve_count']} approve / {scored_kpis['manual_review_count']} review / {scored_kpis['auto_reject_count']} reject")
+        with sp3:
+            st.metric("Average PD", f"{scored_kpis['average_probability_of_default']*100:.2f}%")
+        with sp4:
+            st.metric("Total Expected Loss", f"EGP {scored_kpis['total_expected_loss']:,.0f}",
+                       f"vs EGP {scored_kpis['total_expected_profit']:,.0f} expected profit")
+    else:
+        st.info("No applications scored by the trained model yet in this environment -- this section fills in as applications are evaluated.")
     st.markdown("---")
 
     # -------------------------------------------------------------------------
@@ -1013,29 +1077,21 @@ with tab7:
         except Exception:
             return {}
 
-    def _load_credit_risk_result():
-        """Best-effort live PD score for the current applicant via the
-        trained model artifacts. Returns None if artifacts haven't been
-        trained/loaded yet (model/train.py not run) -- that's expected in
-        a fresh checkout and the assistant is told to explain that
-        honestly rather than pretend it's unavailable for no reason."""
-        try:
-            import app.model as pd_model
-
-            return pd_model.score_application(app_features, history_features)
-        except FileNotFoundError:
-            return None
-        except Exception:
-            return None
-
     def _build_ai_blocks():
         blocks = [{"type": "fraud", "data": assessment}]
-        credit_result = _load_credit_risk_result()
+        # `credit_result` was already computed once near the top of the page
+        # (trained PD model, or None if artifacts aren't loaded yet) --
+        # reused here instead of scoring the applicant a second time.
         if credit_result:
             blocks.append({"type": "credit_risk", "data": credit_result})
         portfolio_kpis = _load_portfolio_snapshot()
         if portfolio_kpis:
             blocks.append({"type": "portfolio", "data": portfolio_kpis})
+        scored_portfolio_kpis = portfolio_analytics.calculate_scored_portfolio_kpis(
+            decision_log.load_scored_decisions()
+        )
+        if scored_portfolio_kpis:
+            blocks.append({"type": "scored_portfolio", "data": scored_portfolio_kpis})
         blocks.append(
             {
                 "type": "custom",
