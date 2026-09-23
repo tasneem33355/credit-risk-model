@@ -7,6 +7,7 @@ model/artifacts/*.joblib
 # Environment / secrets
 .env
 fraud_registry.db
+portfolio_decisions.db
 
 # Raw data - never commit source data (except calibrated synthetic fraud dataset)
 data/*
