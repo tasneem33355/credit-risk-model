@@ -28,8 +28,10 @@ SDK.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -40,6 +42,10 @@ try:  # pragma: no cover - optional convenience, mirrors app/config.py
     load_dotenv()
 except ImportError:  # pragma: no cover
     pass
+
+logger = logging.getLogger("credix.llm")
+if not logger.handlers:
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +66,13 @@ GEMINI_ENDPOINT = (
 
 MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "900"))
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+
+# Retry policy for transient upstream failures (rate limiting / momentary
+# outages) -- NOT for bad requests (4xx other than 429) or bad API keys,
+# which are retried at 0 extra attempts since retrying won't help.
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_RETRY_BASE_DELAY_SECONDS = float(os.getenv("LLM_RETRY_BASE_DELAY_SECONDS", "1.5"))
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class LLMNotConfiguredError(RuntimeError):
@@ -176,7 +189,7 @@ _BLOCK_LABELS = {
 }
 
 
-def _truncate_json(data: Any, max_chars: int = 6000) -> str:
+def _truncate_json(data: Any, max_chars: int = 9000) -> str:
     text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
     if len(text) > max_chars:
         text = text[:max_chars] + "\n... (truncated -- older/less relevant fields cut for length)"
@@ -246,28 +259,51 @@ def call_llm(
         },
     }
 
-    try:
-        resp = requests.post(url, json=payload, timeout=30)
-    except requests.RequestException as exc:
-        raise LLMRequestError(f"Could not reach Gemini API: {exc}") from exc
+    last_exc: Optional[Exception] = None
 
-    if resp.status_code != 200:
-        raise LLMRequestError(f"Gemini API error {resp.status_code}: {resp.text[:500]}")
+    for attempt in range(1, LLM_MAX_RETRIES + 2):  # e.g. 3 retries -> 4 total attempts
+        try:
+            resp = requests.post(url, json=payload, timeout=30)
+        except requests.RequestException as exc:
+            last_exc = exc
+            logger.warning("Gemini request attempt %d failed (network error): %s", attempt, exc)
+        else:
+            if resp.status_code == 200:
+                data = resp.json()
+                try:
+                    candidate = data["candidates"][0]
+                    parts = candidate["content"]["parts"]
+                    text = "".join(p.get("text", "") for p in parts).strip()
+                    if not text:
+                        raise KeyError("empty text")
+                    if attempt > 1:
+                        logger.info("Gemini request succeeded on attempt %d", attempt)
+                    return text
+                except (KeyError, IndexError) as exc:
+                    finish_reason = (data.get("candidates") or [{}])[0].get("finishReason", "UNKNOWN")
+                    raise LLMRequestError(
+                        f"Unexpected/empty Gemini response (finish_reason={finish_reason}). "
+                        f"Raw response: {json.dumps(data, ensure_ascii=False)[:800]}"
+                    ) from exc
 
-    data = resp.json()
-    try:
-        candidate = data["candidates"][0]
-        parts = candidate["content"]["parts"]
-        text = "".join(p.get("text", "") for p in parts).strip()
-        if not text:
-            raise KeyError("empty text")
-        return text
-    except (KeyError, IndexError) as exc:
-        finish_reason = (data.get("candidates") or [{}])[0].get("finishReason", "UNKNOWN")
-        raise LLMRequestError(
-            f"Unexpected/empty Gemini response (finish_reason={finish_reason}). "
-            f"Raw response: {json.dumps(data, ensure_ascii=False)[:800]}"
-        ) from exc
+            if resp.status_code not in _RETRYABLE_STATUS_CODES:
+                # Not worth retrying: bad request, invalid key, etc.
+                raise LLMRequestError(f"Gemini API error {resp.status_code}: {resp.text[:500]}")
+
+            last_exc = LLMRequestError(f"Gemini API error {resp.status_code}: {resp.text[:500]}")
+            logger.warning(
+                "Gemini request attempt %d failed (status %d, retryable): %s",
+                attempt, resp.status_code, resp.text[:200],
+            )
+
+        if attempt <= LLM_MAX_RETRIES:
+            delay = LLM_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            time.sleep(delay)
+
+    logger.error("Gemini request failed after %d attempts", LLM_MAX_RETRIES + 1)
+    if isinstance(last_exc, requests.RequestException):
+        raise LLMRequestError(f"Could not reach Gemini API after {LLM_MAX_RETRIES + 1} attempts: {last_exc}") from last_exc
+    raise last_exc or LLMRequestError("Gemini API call failed for an unknown reason.")
 
 
 # ---------------------------------------------------------------------------
